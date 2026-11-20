@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fillmate"
+version = "0.1.0"
+description = "Fill recurring paperwork from reusable form packs and send it by email."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Leonardo Nels" }]
+requires-python = ">=3.10"
+keywords = ["forms", "pdf", "docx", "paperwork", "automation", "email"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business",
+]
+dependencies = [
+    "pymupdf>=1.24",
+    "python-docx>=1.1",
+    "docxtpl>=0.18",
+    "jinja2>=3.1",
+    "pyyaml>=6",
+    "platformdirs>=4",
+    "holidays>=0.50",
+    "requests>=2.31",
+    "google-auth>=2.30",
+    "google-auth-oauthlib>=1.2",
+    "keyring>=25",
+    "PySide6-Essentials>=6.7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+fillmate = "fillmate.cli:main"
+
+[project.gui-scripts]
+fillmate-gui = "fillmate.gui.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fillmate"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

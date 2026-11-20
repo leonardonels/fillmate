@@ -1,0 +1,92 @@
+fillmate: 1
+id: travel-request
+name: Business travel request (example)
+version: "1.0"
+description: >
+  A made-up company form that shows what a pack can do: a flat PDF filled by
+  position, a DOCX with placeholders, presets, rules and an email to your manager.
+author: fillmate
+country: GB            # public holidays used by working_days_between()
+date_format: "%d/%m/%Y"
+
+# Filled once in Settings → Profile and reused by every pack with the same ids.
+profile:
+  - {id: full_name, label: Full name, required: true}
+  - {id: employee_id, label: Employee ID}
+  - {id: department, label: Department}
+  - {id: manager_email, label: Manager's email, required: true}
+
+# Asked every time.
+fields:
+  - {id: dates, label: Travel dates, type: dates, required: true}
+  - {id: destination, label: Destination, placeholder: "e.g. Head office, 1 Main Street, Leeds"}
+  - {id: start_time, label: From, type: time, default: "09:00"}
+  - {id: end_time, label: To, type: time, default: "17:30"}
+  - {id: purpose, label: Purpose, type: multiline, default: Client meeting}
+  - {id: transport, label: Transport, type: choice, options: [Train, Car, Plane], default: Train}
+  - {id: overnight, label: Overnight stay, type: bool}
+  - {id: notes, label: Notes, type: multiline, placeholder: optional}
+  - {id: requested_on, label: Date of request, type: date, default: today}
+
+presets:
+  head-office:
+    destination: Head office, 1 Main Street, Leeds
+    transport: Train
+  airport-site:
+    destination: Airport site, Hangar 4, Manchester
+    transport: Car
+    overnight: true
+
+# Derived values, usable everywhere below.
+computed:
+  destination_short: "{{ destination.split(',')[0] }}"
+  notice_days: "{{ working_days_between(requested_on, dates[0]) }}"
+
+rules:
+  - error_unless: "destination"
+    message: Enter a destination.
+  - warn_if: "notice_days | int < 3"
+    message: "Only {{ notice_days }} working days' notice: the policy asks for at least 3."
+
+documents:
+  - id: request
+    label: Travel request (PDF)
+    template: travel_request.pdf
+    output: "Travel_request_{{ full_name | slug }}_{{ dates[0] | date('%Y%m%d') }}"
+    fill:
+      # Text: lines are [x_start, baseline_y, x_end] in points from the top-left corner.
+      - {value: "{{ requested_on | date }}", lines: [[140, 150, 260]]}
+      - {value: "{{ full_name }}", lines: [[140, 200, 545]]}
+      - {value: "{{ employee_id }}", lines: [[140, 230, 260]]}
+      - {value: "{{ department }}", lines: [[345, 230, 545]]}
+      - {value: "{{ dates | dates }}", lines: [[140, 280, 545]]}
+      - {value: "{{ destination }}", lines: [[140, 315, 545], [48, 340, 545]]}
+      - {value: "{{ purpose }}", lines: [[140, 375, 545], [48, 400, 545], [48, 425, 545]]}
+      - {value: "{{ notes }}", lines: [[140, 560, 545], [48, 585, 545]]}
+      # Check marks drawn when the expression is true.
+      - {mark: "transport == 'Train'", at: [142, 469]}
+      - {mark: "transport == 'Car'", at: [222, 469]}
+      - {mark: "transport == 'Plane'", at: [292, 469]}
+      - {mark: "overnight", at: [142, 499]}
+
+  - id: notice
+    label: Travel notice (DOCX)
+    template: travel_notice.docx
+    output: "Travel_notice_{{ dates[0] | date('%Y%m%d') }}"
+    placeholders: true
+
+output_folder: "{{ dates[0] | date('%Y-%m-%d') }}_{{ destination_short | slug }}"
+
+email:
+  to: ["{{ manager_email }}"]
+  subject: "Travel request – {{ full_name }} – {{ dates | dates }}"
+  body: |
+    Hello,
+
+    please find attached my travel request for {{ dates | dates }} to {{ destination }}
+    ({{ start_time }}–{{ end_time }}, by {{ transport | lower }}{{ ", overnight stay" if overnight }}).
+
+    Purpose: {{ purpose }}
+
+    Kind regards,
+    {{ full_name }}

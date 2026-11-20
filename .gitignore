@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+# Never commit personal data or credentials
+client_secret*.json
+*token*.json
+profile.yaml
+settings.yaml
+output/
+demo-home/
