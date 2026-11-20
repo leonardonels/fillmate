@@ -33,10 +33,11 @@ dependencies = [
     "google-auth-oauthlib>=1.2",
     "keyring>=25",
     "PySide6-Essentials>=6.7",
+    "ruamel.yaml>=0.18",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "pyflakes>=3", "pillow>=10", "briefcase>=0.3.20"]
 
 [project.scripts]
 fillmate = "fillmate.cli:main"
@@ -49,3 +50,87 @@ packages = ["src/fillmate"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# --- Native installers (https://briefcase.beeware.org) -----------------------
+# briefcase create / build / package  →  .deb, .rpm, .dmg, .msi
+# Keep `requires` in sync with [project].dependencies.
+
+[tool.briefcase]
+project_name = "fillmate"
+bundle = "io.github.leonardonels"
+version = "0.1.0"
+url = "https://github.com/leonardonels/fillmate"
+license = "MIT"
+license-files = ["LICENSE"]
+author = "Leonardo Nels"
+author_email = "81677769+leonardonels@users.noreply.github.com"
+
+[tool.briefcase.app.fillmate]
+formal_name = "fillmate"
+description = "Fill recurring paperwork from reusable form packs and send it by email."
+long_description = """fillmate turns the forms you fill in again and again into a small form:
+type what changes, check the preview, and email the filled PDF and Word documents.
+"""
+icon = "packaging/icons/fillmate"
+sources = ["src/fillmate"]
+test_sources = ["tests"]
+requires = [
+    "pymupdf>=1.24",
+    "python-docx>=1.1",
+    "docxtpl>=0.18",
+    "jinja2>=3.1",
+    "pyyaml>=6",
+    "platformdirs>=4",
+    "holidays>=0.50",
+    "requests>=2.31",
+    "google-auth>=2.30",
+    "google-auth-oauthlib>=1.2",
+    "keyring>=25",
+    "PySide6-Essentials>=6.8",
+    "ruamel.yaml>=0.18",
+]
+test_requires = ["pytest"]
+
+[tool.briefcase.app.fillmate.macOS]
+universal_build = true
+min_os_version = "13.0"
+requires = ["std-nslog~=2.0.0"]
+
+[tool.briefcase.app.fillmate.linux.system.debian]
+system_requires = []
+system_runtime_requires = [
+    "libgl1",
+    "libqt6dbus6",
+    "libqt6gui6",
+    "libxcb-cursor0",
+    "libxcb-icccm4",
+    "libxcb-keysyms1",
+    "libxcb-shape0",
+    "libxkbcommon-x11-0",
+]
+
+[tool.briefcase.app.fillmate.linux.system.rhel]
+system_requires = []
+system_runtime_requires = ["qt6-qtbase-gui"]
+
+[tool.briefcase.app.fillmate.linux.system.suse]
+system_requires = []
+system_runtime_requires = ["libgthread-2_0-0", "libQt6Gui6"]
+
+[tool.briefcase.app.fillmate.linux.system.arch]
+system_requires = []
+system_runtime_requires = ["qt6-base"]
+
+[tool.briefcase.app.fillmate.linux.flatpak]
+flatpak_runtime = "org.kde.Platform"
+flatpak_runtime_version = "6.9"
+flatpak_sdk = "org.kde.Sdk"
+
+[tool.briefcase.app.fillmate.iOS]
+supported = false
+
+[tool.briefcase.app.fillmate.android]
+supported = false
+
+[tool.briefcase.app.fillmate.web]
+supported = false

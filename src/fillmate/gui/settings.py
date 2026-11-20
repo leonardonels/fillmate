@@ -7,12 +7,13 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout,
-    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
+    QGroupBox, QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
     QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSpinBox, QTabWidget, QToolButton,
     QVBoxLayout, QWidget,
 )
 
 from .. import FillmateError, store
+from ..authoring import create_pack_from_pdf
 from ..mail import addresses, smtp
 from ..mail.gmail import SETUP_GUIDE, parse_client_secret
 from ..pack import export_pack, import_pack, list_packs, remove_pack
@@ -337,11 +338,18 @@ class SettingsDialog(QDialog):
         lay.addWidget(self.pack_info)
         row = QHBoxLayout()
         for text, slot in (("Import .zip…", self.import_zip), ("Import folder…", self.import_folder),
-                           ("Install example", self.install_example)):
+                           ("Install example", self.install_example), ("New pack from PDF…", self.new_from_pdf)):
             b = QPushButton(text)
             b.clicked.connect(slot)
             row.addWidget(b)
         row.addStretch()
+        lay.addLayout(row)
+        row = QHBoxLayout()
+        row.addStretch()
+        self.positions_btn = QPushButton("Edit positions…")
+        self.positions_btn.setToolTip("Place where each value goes on the pack's PDF documents")
+        self.positions_btn.clicked.connect(self.edit_positions)
+        row.addWidget(self.positions_btn)
         self.export_btn = QPushButton("Export…")
         self.export_btn.clicked.connect(self.export_selected)
         row.addWidget(self.export_btn)
@@ -386,6 +394,7 @@ class SettingsDialog(QDialog):
         p = self.selected_pack()
         self.export_btn.setEnabled(p is not None)
         self.remove_btn.setEnabled(p is not None)
+        self.positions_btn.setEnabled(p is not None and any(d.kind == "pdf" for d in p.documents))
         if not p:
             self.pack_info.setText("")
             return
@@ -427,6 +436,46 @@ class SettingsDialog(QDialog):
         for folder in sorted(examples_dir().iterdir()):
             if (folder / "pack.yaml").is_file():
                 self._import(folder)
+
+    def new_from_pdf(self):
+        path, _ = QFileDialog.getOpenFileName(self, "PDF to fill", str(Path.home()), "PDF (*.pdf)")
+        if not path:
+            return
+        name, ok = QInputDialog.getText(self, "New pack", "Name of the new pack:", text=Path(path).stem)
+        if not ok or not name.strip():
+            return
+        try:
+            pack = create_pack_from_pdf(path, self.current_packs_dir(), name.strip())
+        except (FillmateError, OSError, RuntimeError) as e:
+            QMessageBox.warning(self, "New pack", str(e))
+            return
+        self.packs_changed = True
+        found = len(pack.fields)
+        QMessageBox.information(
+            self, "New pack",
+            (f"The PDF has {found} fillable fields: they are already set up as pack fields. "
+             if found else "The PDF has no fillable fields: draw where each value goes in the next window. ")
+            + f"\n\nThe pack is in {pack.root}. Open pack.yaml there to change labels, add an email, rules and more.")
+        self.refresh_packs(select=pack.id)
+        if not found:
+            self.edit_positions()
+
+    def edit_positions(self):
+        from .calibrate import CalibrateDialog
+
+        p = self.selected_pack()
+        docs = [d for d in p.documents if d.kind == "pdf"] if p else []
+        if not docs:
+            return
+        doc = docs[0]
+        if len(docs) > 1:
+            label, ok = QInputDialog.getItem(self, "Edit positions", "Document:", [d.label for d in docs], 0, False)
+            if not ok:
+                return
+            doc = next(d for d in docs if d.label == label)
+        if CalibrateDialog(self, p, doc.id).exec():
+            self.packs_changed = True
+        self.refresh_packs(select=p.id)
 
     def export_selected(self):
         p = self.selected_pack()

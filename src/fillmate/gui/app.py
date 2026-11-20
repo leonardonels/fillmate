@@ -23,7 +23,7 @@ from ..paths import cache_dir
 from .common import GNOME_SCHEME, Bridge, Preview, apply_theme, banner_style, gnome_available
 from .fields import build_form
 
-APP_ID = "io.github.fillmate"
+APP_ID = "io.github.leonardonels.fillmate"  # matches the installed .desktop file
 PLACEHOLDER = "Fill in the form and press “Create documents” to see a preview."
 
 

@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -62,6 +63,7 @@ def test_client_secret_validation(isolated_home):
     auth.save_client_secret(good)
     assert auth.configured() and auth.client_id().startswith("123-")
     path = isolated_home / "config" / "google_client_secret.json"
-    assert oct(path.stat().st_mode & 0o777) == "0o600"
+    if os.name == "posix":  # Windows has no owner-only permission bits
+        assert oct(path.stat().st_mode & 0o777) == "0o600"
     auth.remove_client_secret()
     assert not auth.configured()

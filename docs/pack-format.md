@@ -101,9 +101,13 @@ documents:
 ```
 
 Words flow into the next line when one is full. If the text still doesn't fit, the font
-shrinks in 0.5 pt steps. To find coordinates, open the PDF in any viewer that shows
-cursor positions in points (1 pt = 1/72 inch; A4 is 595 × 842). A calibration tool in
-the app is planned.
+shrinks in 0.5 pt steps. Coordinates are in points (1 pt = 1/72 inch; A4 is
+595 × 842).
+
+You don't need to measure them yourself. In **Settings → Form packs**, use **Edit
+positions…** (or **New pack from PDF…** for a new form). You draw a box over each blank
+line, choose the value that goes there, and click boxes that should get a check mark.
+Sample text shows how it will look. Saving updates `pack.yaml` and keeps your comments.
 
 ### PDF: check marks
 

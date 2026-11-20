@@ -234,8 +234,6 @@ def load_pack(root) -> Pack:
         placeholders = bool(d.get("placeholders", False))
         if placeholders and kind != ".docx":
             raise PackError(f"{w}: 'placeholders' only works with .docx templates.")
-        if not fill and not placeholders:
-            raise PackError(f"{w} has nothing to fill: add 'fill' entries or 'placeholders: true'.")
         documents.append(Document(
             id=doc_id, label=_str(d.get("label"), f"{w}.label", doc_id), template=template,
             output=_str(d.get("output"), f"{w}.output", template.stem), placeholders=placeholders, fill=fill))

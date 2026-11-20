@@ -1,0 +1,102 @@
+# Push a tag like v0.2.0 to build every installer and publish to PyPI:
+#   git tag v0.2.0 && git push origin v0.2.0
+# The installers are attached to a draft GitHub Release: check them, then publish it.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:  # manual run: builds the installers as artifacts, no release or PyPI upload
+
+permissions:
+  contents: read
+
+jobs:
+  python-package:
+    name: Wheel and sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install build
+      - run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-package
+          path: dist/*
+
+  installers:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: "Linux .deb (Ubuntu 24.04)", os: ubuntu-24.04, platform: linux, format: system,
+             target: "ubuntu:24.04", files: "dist/*.deb"}
+          - {name: "Linux .rpm (Fedora 42)", os: ubuntu-24.04, platform: linux, format: system,
+             target: "fedora:42", files: "dist/*.rpm"}
+          - {name: "macOS .dmg", os: macos-latest, platform: macOS, format: app,
+             target: "", files: "dist/*.dmg"}
+          - {name: "Windows .msi", os: windows-latest, platform: windows, format: app,
+             target: "", files: "dist/*.msi"}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install briefcase
+      - name: Build (Linux, inside a container of the target distro)
+        if: matrix.platform == 'linux'
+        run: |
+          briefcase create linux system --target ${{ matrix.target }} --no-input
+          briefcase build linux system --target ${{ matrix.target }} --no-input
+          briefcase package linux system --target ${{ matrix.target }} --no-input
+      - name: Build (macOS / Windows, unsigned)
+        if: matrix.platform != 'linux'
+        run: |
+          briefcase create ${{ matrix.platform }} ${{ matrix.format }} --no-input
+          briefcase build ${{ matrix.platform }} ${{ matrix.format }} --no-input
+          briefcase package ${{ matrix.platform }} ${{ matrix.format }} --adhoc-sign --no-input
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ strategy.job-index }}
+          path: ${{ matrix.files }}
+          if-no-files-found: error
+
+  github-release:
+    name: Draft GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [python-package, installers]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: artifacts/*
+
+  pypi:
+    name: Publish to PyPI
+    # Needs a "trusted publisher" set up once on pypi.org for this repo and workflow,
+    # and a GitHub environment named "pypi". Remove this job if you don't publish there.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [python-package, installers]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-package
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1

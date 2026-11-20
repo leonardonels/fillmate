@@ -12,3 +12,5 @@ profile.yaml
 settings.yaml
 output/
 demo-home/
+build/
+logs/

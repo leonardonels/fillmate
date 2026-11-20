@@ -26,7 +26,10 @@ pipx install fillmate      # or: pip install fillmate
 fillmate                   # opens the app
 ```
 
-Native installers (`.deb`, `.rpm`, `.dmg`, `.msi`) are planned.
+Or download an installer (`.deb`, `.rpm`, `.dmg`, `.msi`) from the
+[Releases](https://github.com/leonardonels/fillmate/releases) page. The macOS and Windows
+builds aren't signed yet. On macOS, right-click the app and choose **Open** the first
+time. On Windows, choose **More info → Run anyway**.
 
 ## First steps
 
@@ -43,7 +46,14 @@ goes only to the test addresses you list.
 
 ## Make a pack for your own forms
 
-See [docs/pack-format.md](docs/pack-format.md). A pack is a folder like this:
+In **Settings → Form packs → New pack from PDF…**, pick your PDF:
+
+- If it has fillable fields, they become pack fields right away.
+- If it's a flat PDF, draw a box over each blank line and click the boxes that should
+  get a check mark.
+
+For everything else (Word templates, rules, email, presets) see
+[docs/pack-format.md](docs/pack-format.md). A pack is a folder like this:
 
 ```
 my-pack/
@@ -84,11 +94,24 @@ DOCX previews, and attaching DOCX files as PDF, need
 ## Development
 
 ```bash
-git clone https://github.com/<you>/fillmate && cd fillmate
+git clone https://github.com/leonardonels/fillmate && cd fillmate
 python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 .venv/bin/pytest
 .venv/bin/python tools/make_example_pack.py   # regenerate the example templates
+.venv/bin/python tools/make_icons.py          # regenerate installer icons from the SVG
+.venv/bin/python tools/demo.py                # open the app with made-up data
 ```
+
+### Installers
+
+Built with [Briefcase](https://briefcase.beeware.org) (config in `pyproject.toml`):
+
+```bash
+briefcase create linux system && briefcase build linux system && briefcase package linux system
+```
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`. It builds the `.deb`, `.rpm`,
+`.dmg` and `.msi` plus the PyPI package, and attaches them to a draft GitHub release.
 
 ## License
 
