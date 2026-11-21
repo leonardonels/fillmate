@@ -1,6 +1,7 @@
 """The window frame: no system title bar, round corners, and window buttons where each platform expects them.
 
-- macOS keeps the real traffic lights; the window content runs under the title bar (Qt 6.9+).
+- macOS keeps the real traffic lights; the window content runs under the title bar (Qt 6.9+). A window can
+  ask for them to sit centred on its toolbar row instead of in the title bar's corner (mac_lights).
 - Windows and Linux are frameless. Moving and resizing are handed to the system
   (QWindow.startSystemMove/Resize), so snapping and tiling keep working.
 - Linux shows the buttons the desktop asks for (GNOME's button-layout, KDE's title bar settings).
@@ -24,6 +25,60 @@ RADIUS = {"mac": 0, "windows": 0, "linux": 36}
 EDGE = 6  # px of invisible resize band along each edge
 MAC_LIGHTS = 36  # room the traffic lights need at the top of the sidebar
 ALL = ["minimize", "maximize", "close"]
+
+
+def place_mac_lights(window, center_y, first_x, spacing=20):
+    """Move the real traffic lights so their centres sit at (first_x + i * spacing, center_y), in the
+    window's points: centred on the toolbar row, as a native toolbar would put them. AppKit lays them out
+    again on resizes and full screen, so Frame re-applies this then. Best effort: if anything here fails
+    the lights stay where macOS put them."""
+    if PLATFORM != "mac" or window.isFullScreen():
+        return
+    try:
+        import ctypes
+        import ctypes.util
+        import platform
+        from ctypes import c_double, c_long, c_void_p
+
+        class Point(ctypes.Structure):
+            _fields_ = [("x", c_double), ("y", c_double)]
+
+        class Size(ctypes.Structure):
+            _fields_ = [("width", c_double), ("height", c_double)]
+
+        class Rect(ctypes.Structure):
+            _fields_ = [("origin", Point), ("size", Size)]
+
+        objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
+        objc.sel_registerName.restype = c_void_p
+        objc.sel_registerName.argtypes = [ctypes.c_char_p]
+
+        def send(restype, obj, sel, *args):
+            # Intel returns structs this large through objc_msgSend_stret; Apple Silicon through objc_msgSend.
+            fn = objc.objc_msgSend_stret if restype is Rect and platform.machine() == "x86_64" else objc.objc_msgSend
+            proto = ctypes.CFUNCTYPE(restype, c_void_p, c_void_p, *[type(a) for a in args])
+            return proto(ctypes.cast(fn, c_void_p).value)(obj, objc.sel_registerName(sel.encode()), *args)
+
+        nswindow = send(c_void_p, c_void_p(int(window.winId())), "window")
+        buttons = [send(c_void_p, c_void_p(nswindow), "standardWindowButton:", c_long(i)) for i in range(3)]
+        if not nswindow or not all(buttons):
+            return
+        container = send(c_void_p, send(c_void_p, c_void_p(buttons[0]), "superview"), "superview")
+        frame_view = send(c_void_p, c_void_p(container), "superview")
+        if not container or not frame_view:
+            return
+        bar = send(Rect, c_void_p(container), "frame")
+        height = 2 * center_y  # a title bar this tall has its middle on the toolbar row
+        bar.origin.y = send(Rect, c_void_p(frame_view), "frame").size.height - height  # AppKit's y runs up
+        bar.size.height = height
+        send(None, c_void_p(container), "setFrame:", bar)
+        for i, button in enumerate(buttons):
+            f = send(Rect, c_void_p(button), "frame")
+            f.origin.x = first_x + i * spacing - f.size.width / 2
+            f.origin.y = (height - f.size.height) / 2
+            send(None, c_void_p(button), "setFrame:", f)
+    except Exception:  # noqa: BLE001 - cosmetic; never break the window over it
+        return
 
 
 def _gnome_layout():
@@ -226,6 +281,7 @@ class Frame(QObject):
         super().__init__(window)
         self.window, self.drag_zone = window, drag_zone
         self.left, self.right = button_layout(dialog)
+        self.mac_lights = None  # (centre y, first light's centre x): move the traffic lights there (macOS)
         self._cursor_edges = None
         if PLATFORM == "mac":
             window.setWindowFlag(Qt.ExpandedClientAreaHint, True)
@@ -266,6 +322,12 @@ class Frame(QObject):
     def after_show(self):
         if PLATFORM == "windows":
             set_windows_round_corners(self.window)
+        self.place_lights()
+
+    def place_lights(self):
+        """Put the traffic lights back on the toolbar row after AppKit moved them (resize, full screen)."""
+        if PLATFORM == "mac" and self.mac_lights:
+            QTimer.singleShot(0, lambda: place_mac_lights(self.window, *self.mac_lights))
 
     # --- moving and resizing ---
 
@@ -308,6 +370,9 @@ class Frame(QObject):
 
     def eventFilter(self, obj, event):
         t = event.type()
+        if t == QEvent.Resize and obj is self.window:
+            self.place_lights()
+            return False
         if t not in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick, QEvent.WindowStateChange,
                      QEvent.WindowActivate, QEvent.WindowDeactivate):
             return False
@@ -316,6 +381,7 @@ class Frame(QObject):
         if t in (QEvent.WindowStateChange, QEvent.WindowActivate, QEvent.WindowDeactivate):
             if obj is self.window:
                 self._state_changed()
+                self.place_lights()
             return False
         if event.button() != Qt.LeftButton:
             return False

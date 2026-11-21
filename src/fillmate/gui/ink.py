@@ -261,7 +261,8 @@ class DotGrid(QWidget):
         super().__init__(parent)
         self.room = False
         self.heading = ""          # the open pack's name: the big type
-        self.left = 300            # where the content starts (right of the sidebar)
+        self.left = 300            # where the content starts
+        self.right_pad = 50        # how far from the right edge the big type and stamp stop (the form's width)
         self.type_left = 0         # how far right of that the big type starts
         self.side_label = ""       # along the left edge of the content
         self.edge_label = ""       # along the right edge
@@ -277,7 +278,7 @@ class DotGrid(QWidget):
 
     def paintEvent(self, _event):
         r = self.radius() if self.radius else 0
-        key = (self.size().width(), self.size().height(), r, T["ground"], T["label"], self.room,
+        key = (self.size().width(), self.size().height(), r, T["ground"], T["label"], self.room, self.right_pad,
                T["red"], self.heading, self.left, self.side_label, self.edge_label, self.foot_label, self.stamp)
         if self._cache is None or self._cache[0] != key:
             dpr = self.devicePixelRatioF()
@@ -304,7 +305,8 @@ class DotGrid(QWidget):
         # The pack's name, huge and faint: which form you are filling.
         name = re.sub(r"\s*\([^)]*\)", "", self.heading).strip()  # "Travel request (example)" → TRAVEL REQUEST
         words = name.upper().split()
-        stamp_at = QPointF(self.left + self.type_left + (w - self.left - self.type_left) * 0.55, h * 0.42)
+        x0 = self.left + self.type_left  # over the previews, where the paper shows
+        stamp_at = QPointF(x0 + (w - self.right_pad - x0) * 0.6, h * 0.42)
         if words:
             lines = [" ".join(words)]
             if len(words) > 1:
@@ -318,8 +320,7 @@ class DotGrid(QWidget):
                 stretch = 1.25  # no wide font: widen what there is
             p.setFont(f)
             widest = max(p.fontMetrics().horizontalAdvance(line) for line in lines) * stretch
-            x0 = self.left + self.type_left  # over the previews, where the paper shows
-            room = w - x0 - 50
+            room = w - x0 - self.right_pad
             px = max(48, min(176, 100 * room / max(1, widest + (60 if len(lines) > 1 else 0))))
             f.setPixelSize(int(px))
             p.setFont(f)
@@ -335,7 +336,7 @@ class DotGrid(QWidget):
                 p.restore()
             # The stamp lands across the end of the first line, as if pressed on after filling.
             first = p.fontMetrics().horizontalAdvance(lines[0]) * stretch
-            stamp_at = QPointF(min(x0 + first - 40, w - 220), y - px * 0.55)
+            stamp_at = QPointF(min(x0 + first - 40, w - self.right_pad - 170), y - px * 0.55)
         if self.stamp:
             _stamp(p, stamp_at, *self.stamp, self.devicePixelRatioF())
         # Printer's marks: a ruler on the right edge, registration, labels, colour bar.
@@ -435,6 +436,12 @@ def _icon_path(name):
         p.moveTo(13, 6)
         p.lineTo(19, 12)
         p.lineTo(13, 18)
+    elif name == "arrow_left":
+        p.moveTo(19, 12)
+        p.lineTo(5, 12)
+        p.moveTo(11, 6)
+        p.lineTo(5, 12)
+        p.lineTo(11, 18)
     elif name == "gear":
         import math
         teeth, outer, inner = 8, 9.6, 7.4
@@ -861,7 +868,7 @@ class GlassPanel(QWidget):
         self.shadow.setGeometry(self.geometry().adjusted(-m, -m, m, m))
         self.shadow.glow = None
         self.shadow.lift = getattr(self, "lift", False)
-        self.shadow.setVisible(self.isVisible())
+        self.shadow.setVisible(self.isVisible() and not getattr(self, "bare", False))
         self.shadow.stackUnder(self)
         self.shadow.update()
 
@@ -918,11 +925,22 @@ class GlassPanel(QWidget):
             self.image = glass_image(pix, self.radius, self.bezel, self.blur)
         self.update()
 
+    def set_bare(self, bare):
+        """Drop the glass and keep only what is on it, for a control that lies on another piece of glass
+        for a while (the drawer's toggle while the drawer is open): no glass on glass."""
+        self.bare = bare
+        if self.shadow is not None:
+            self.shadow.setVisible(self.isVisible() and not bare)
+        self.update()
+
     def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r = QRectF(self.rect())
         path = glass_path(r, self.radius)
+        if getattr(self, "bare", False):
+            self.paint_content(p)
+            return
         p.save()
         p.setClipPath(path)
         if self.image is not None:

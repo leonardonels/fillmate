@@ -4,8 +4,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QEventLoop, QPoint, QProcess, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QFont, QFontMetrics, QIcon, QKeySequence, QShortcut
+from PySide6.QtCore import QEventLoop, QPoint, QProcess, QRect, Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QFont, QFontMetrics, QIcon, QKeySequence, QRegion, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget,
@@ -33,6 +33,7 @@ from .ink import (
 APP_ID = "io.github.leonardonels.fillmate"  # matches the installed .desktop file
 PLACEHOLDER = "Fill in the form and press “Create documents” to see a preview."
 SIDEBAR_W, INSET, FORM_W = 272, 12, 392
+PAD = 24  # side margins of the content
 
 
 def icon():
@@ -175,10 +176,13 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.canvas)
         self.content = DotGrid(self.canvas)  # everything under the glass: the print room
         self.content.room = True
-        self.content.left = SIDEBAR_W + 2 * INSET + 8
-        self.content.type_left = FORM_W + 28  # the big type sits over the previews
+        self.content.left = PAD
+        self.content.type_left = 0  # the big type sits over the previews, left of the form
+        self.content.right_pad = FORM_W + PAD + 28 + 50
         self.glass = GlassLayer(self.content)
         self.frame = Frame(self, self._drag_zone)
+        # On a Mac the traffic lights sit on the toolbar row, before the drawer toggle.
+        self.frame.mac_lights = (INSET + 22, INSET + 14)
         if frame.PLATFORM == "linux":
             self.setStyleSheet("QMainWindow { background: transparent; }")
         self.content.radius = self.frame.radius
@@ -205,13 +209,22 @@ class MainWindow(QMainWindow):
 
     def _content(self):
         row = QHBoxLayout(self.content)
-        row.setContentsMargins(SIDEBAR_W + 2 * INSET + 8, 0, 24, 0)
+        row.setContentsMargins(PAD, 0, PAD, 0)
         row.setSpacing(28)
 
         form = QWidget()
         v = QVBoxLayout(form)
         v.setContentsMargins(0, 76, 4, 24)
         v.setSpacing(14)
+        # The title is part of the column: it scrolls up with the fields (under the toolbar's glass).
+        self.title = set_role(label("New request"), "h1")
+        self.subtitle = label("", "muted")
+        heading = QVBoxLayout()
+        heading.setContentsMargins(6, 0, 0, 0)
+        heading.setSpacing(0)
+        heading.addWidget(self.title)
+        heading.addWidget(self.subtitle)
+        v.addLayout(heading)
         self.warning = MarginNote(arrow=False)  # rule warnings, in fillmate's red pen
         self.warning.hide()
         v.addWidget(self.warning)
@@ -231,16 +244,16 @@ class MainWindow(QMainWindow):
         self.docx_pdf.toggled.connect(self._remember_docx_pdf)
         h.addWidget(self.docx_pdf)
         v.addWidget(self.docx_row)
-        # Create documents is glass, so it can't sit inside the form (the content it would bend): it floats
-        # on the glass layer over this slot, and sticks to the bottom of the form's view when a long form
-        # scrolls under it.
+        # Create documents is glass, so it can't sit inside the form (the content it would bend): it lies
+        # on the glass layer exactly over this slot and scrolls with it, cut off below the toolbar.
         self.gen_slot = QWidget()
         self.gen_slot.setFixedHeight(44)
         self.gen_slot.moveEvent = lambda e: self._place_gen()
         v.addWidget(self.gen_slot)
         text = "Create documents"
         width = QFontMetrics(ink.font("ui", 15, QFont.DemiBold)).horizontalAdvance(text) + 22 + 44
-        self.gen_btn = self.glass.add(GlassButton(text, "arrow", self.canvas, width=width, icon_trails=True))
+        # The arrow points at the previews it makes, on the left.
+        self.gen_btn = self.glass.add(GlassButton(text, "arrow_left", self.canvas, width=width))
         self.gen_btn.clicked.connect(self.generate)
         self.status = label("", "muted", wrap=True)
         v.addWidget(self.status)
@@ -249,12 +262,12 @@ class MainWindow(QMainWindow):
         self.form_scroll.setFixedWidth(FORM_W)
         self.form_scroll.verticalScrollBar().valueChanged.connect(self.glass.schedule)
         self.form_scroll.verticalScrollBar().valueChanged.connect(self._place_gen)
-        row.addWidget(self.form_scroll)
 
         self.tabs = OutputStack(self._mail())
         self.tabs.currentChanged.connect(self._page_shown)
         self.tabs.labels_changed.connect(self._labels_changed)
         row.addWidget(self.tabs, 1)
+        row.addWidget(self.form_scroll)
 
     def _mail(self):
         page = QWidget()
@@ -301,14 +314,12 @@ class MainWindow(QMainWindow):
         return area
 
     def _toolbar(self):
-        self.title = set_role(label("New request"), "h1")
-        self.subtitle = label("", "muted")
-        self.title_box = QWidget(self.canvas)
-        tv = QVBoxLayout(self.title_box)
-        tv.setContentsMargins(0, 0, 0, 0)
-        tv.setSpacing(0)
-        tv.addWidget(self.title)
-        tv.addWidget(self.subtitle)
+        # Packs, presets and settings live in a drawer that slides over the previews when asked for.
+        self.side_toggle = self.glass.add(GlassGroup(self.canvas))
+        self.side_btn = self.side_toggle.add("sidebar", "Packs and settings (Ctrl+B)",
+                                             lambda: self.show_sidebar(not self.sidebar.isVisible()))
+        QShortcut(QKeySequence("Ctrl+B"), self, activated=lambda: self.show_sidebar(not self.sidebar.isVisible()))
+        QShortcut(QKeySequence(Qt.Key_Escape), self, activated=lambda: self.show_sidebar(False))
         self.segments = self.glass.add(GlassSegmented(self.canvas, ["Email"]))
         self.segments.changed.connect(self.tabs.setCurrentIndex)
         self.tools = self.glass.add(GlassGroup(self.canvas))
@@ -347,9 +358,12 @@ class MainWindow(QMainWindow):
         self.zoom_bar.setVisible(p is not None and p.has_pages())
 
     def _sidebar(self):
-        self.sidebar = self.glass.add(GlassPanel(self.canvas, radius=24, bezel=30, blur=0.5, regular=True))
+        # Frosted like the send check: it lies over documents, and its lists must stay readable on them.
+        self.sidebar = self.glass.add(GlassPanel(self.canvas, radius=24, bezel=30, blur=6, regular=True,
+                                                 lift=True))
+        self.sidebar.hide()
         v = QVBoxLayout(self.sidebar)
-        top = 16 + self.frame.mac_top() + (40 if self.frame.left else 0)  # room for window buttons
+        top = 44 + 14  # room for the toggle row above the lists
         v.setContentsMargins(12, top, 12, 12)
         v.setSpacing(2)
         v.addWidget(set_role(label("Form packs"), "sec"))
@@ -410,45 +424,66 @@ class MainWindow(QMainWindow):
         w, h = self.canvas.width(), self.canvas.height()
         self.content.setGeometry(0, 0, w, h)
         self.sidebar.setGeometry(INSET, INSET, SIDEBAR_W, h - 2 * INSET)
-        left = SIDEBAR_W + 2 * INSET + 8
-        self.title_box.setGeometry(left, INSET, 300, 44)
+        x = INSET + (72 if self.frame.mac_top() else 0)  # after the traffic lights (mac_lights) on a Mac
+        if self.win_left is not None:  # window buttons on the left: the toggle goes after them
+            self.win_left.move(INSET, INSET)
+            x = self.win_left.x() + self.win_left.width() + 12
+        self.side_toggle.move(x, INSET)
         right = w - INSET
         if self.win_right is not None:
             self.win_right.move(right - self.win_right.width(), INSET)
             right = self.win_right.x() - 12
-        if self.win_left is not None:
-            self.win_left.move(INSET + 14, INSET + 4)
         self.send_btn.move(right - self.send_btn.width(), INSET)
         self.tools.move(self.send_btn.x() - 12 - self.tools.width(), INSET)
-        out_left = left + FORM_W + 28
-        # The output tabs fill the gap between the title and the buttons on the right: centred in it,
-        # roomier when there is space, shortened when there is not, never under either side.
-        title_right = left + max(self.title.sizeHint().width(), self.subtitle.sizeHint().width()) + 24
-        room_right = self.tools.x() - 12
-        self.segments.set_max_width(max(GlassSegmented.MIN_TAB + 8, room_right - title_right))
-        x = title_right + (room_right - title_right - self.segments.width()) // 2
-        self.segments.move(max(title_right, x), INSET)
-        self.zoom_bar.move(out_left + (w - 24 - out_left - self.zoom_bar.width()) // 2,
+        # The output tabs sit over the previews: centred over them, shortened when there is no room,
+        # never under the toggle or the buttons on the right.
+        docs_left, docs_right = PAD, w - PAD - FORM_W - 28
+        room_left = self.side_toggle.x() + self.side_toggle.width() + 12
+        if self.sidebar.isVisible():  # the tabs move aside rather than lie under the drawer's glass
+            room_left = max(room_left, self.sidebar.geometry().right() + 12)
+        room_right = min(self.tools.x() - 12, docs_right)
+        self.segments.set_max_width(max(GlassSegmented.MIN_TAB + 8, room_right - room_left))
+        x = (docs_left + docs_right - self.segments.width()) // 2
+        self.segments.move(max(room_left, min(x, room_right - self.segments.width())), INSET)
+        self.zoom_bar.move((docs_left + docs_right - self.zoom_bar.width()) // 2,
                            h - INSET - 8 - self.zoom_bar.height())
         self._update_zoom_bar()
         self._place_gen()
-        for wdg in (self.sidebar, self.title_box, self.segments, self.tools, self.send_btn, self.zoom_bar,
-                    self.gen_btn, self.win_left, self.win_right):
+        for wdg in (self.segments, self.tools, self.send_btn, self.zoom_bar, self.gen_btn, self.sidebar,
+                    self.side_toggle, self.win_left, self.win_right):
             if wdg is not None:
                 wdg.raise_()
         self.edge.setGeometry(self.canvas.rect())
         self.edge.raise_()
         self.glass.schedule()
 
+    def show_sidebar(self, on):
+        """Open or close the packs-and-settings drawer: glass over the previews."""
+        if on == self.sidebar.isVisible():
+            return
+        self.sidebar.setVisible(on)
+        self.side_toggle.set_bare(on)  # on the drawer the toggle is just its icon: no glass on glass
+        self._place()  # moves the tabs aside (or back) and raises the drawer and its toggle
+        self.glass.schedule()
+
     def _place_gen(self, *_args):
-        """Create documents over its slot in the form, kept inside the form's view."""
+        """Create documents exactly over its slot in the form, cut off where it slides under the toolbar."""
         if not hasattr(self, "gen_btn"):
             return  # the slot moves while the form is first laid out, before the button exists
+        btn = self.gen_btn
         slot = self.gen_slot.mapTo(self.canvas, QPoint(0, 0))
+        btn.move(slot.x() + 6, slot.y())
         view = self.form_scroll.viewport()
-        top = view.mapTo(self.canvas, QPoint(0, 0)).y()
-        y = max(top + 8, min(slot.y(), top + view.height() - self.gen_btn.height() - 16))
-        self.gen_btn.move(slot.x() + 6, y)
+        top = max(INSET + 44 + 8, view.mapTo(self.canvas, QPoint(0, 0)).y())
+        bottom = view.mapTo(self.canvas, QPoint(0, view.height())).y()
+        shown = QRect(0, top - slot.y(), btn.width(), bottom - top).intersected(btn.rect())
+        btn.setVisible(not shown.isEmpty())
+        if shown == btn.rect():
+            btn.clearMask()
+        elif not shown.isEmpty():
+            btn.setMask(QRegion(shown))
+        if btn.shadow is not None:
+            btn.shadow.setVisible(btn.isVisible() and shown == btn.rect())
 
     def _labels_changed(self, labels):
         self.segments.set_labels(labels, min(self.tabs.currentIndex(), len(labels) - 1))

@@ -112,13 +112,15 @@ def apply_theme(choice):
 class Preview(QScrollArea):
     """Rendered pages stacked vertically, scaled to the available width.
 
-    The pages are paper lying on the window's dot grid; they start below the
-    toolbar and scroll up under its glass.
+    The pages are paper lying on the window's dot grid. New pages open already
+    tucked under the toolbar's glass (TUCK), so the glass has the page to bend
+    from the start; scrolling up shows the page's top clear of it.
     """
     changed = Signal()
     zoomed = Signal(float)
     MAX_W = 640
     ZOOMS = (0.5, 0.67, 0.8, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0)
+    TUCK = 52  # px scrolled at the start: the page's top edge sits just under the top of the tab bar
 
     def __init__(self, placeholder):
         super().__init__()
@@ -135,7 +137,15 @@ class Preview(QScrollArea):
         self.box.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self.setWidget(self.inner)
         self.pixmaps, self.labels = [], []
+        self._tuck = False
+        self.verticalScrollBar().rangeChanged.connect(lambda *_: self._apply_tuck())
         self.message(placeholder)
+
+    def _apply_tuck(self):
+        bar = self.verticalScrollBar()
+        if self._tuck and bar.maximum() >= self.TUCK:
+            self._tuck = False
+            bar.setValue(self.TUCK)
 
     def _clear(self):
         while self.box.count():
@@ -171,6 +181,8 @@ class Preview(QScrollArea):
             self.pixmaps.append(pm)
             self.labels.append(label)
         self._rescale()
+        self._tuck = True  # applied once the scroll range has room for it (after layout)
+        self._apply_tuck()
         self.changed.emit()
 
     def resizeEvent(self, event):
