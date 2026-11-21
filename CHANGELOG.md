@@ -40,4 +40,6 @@
   and settings moved to a glass drawer (the top-left button or Ctrl+B; Esc closes it). New previews open with the
   page's top already under the tab bar's glass.
 - macOS: the traffic lights sit on the toolbar row, before the drawer button.
+- macOS installer: a "drag to install" window drawn in the app's ink, with the standard disk icon. The .dmg is
+  no longer signed, so Gatekeeper asks about the app once instead of the disk image as well.
 - Requires PySide6 below 6.12: 6.12 releases Python's None once too often on Python 3.10–3.11 and the app aborts.

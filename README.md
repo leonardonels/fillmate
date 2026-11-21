@@ -29,10 +29,13 @@ fillmate                   # opens the app
 Or download an installer (`.deb`, `.rpm`, `.dmg`, `.msi`) from the
 [Releases](https://github.com/leonardonels/fillmate/releases) page. The `.deb` works on
 Ubuntu 22.04 and later (`sudo apt install ./fillmate_*_amd64.deb`), the `.rpm` on Fedora
-and RHEL 9 or later (`sudo dnf install ./fillmate-*.x86_64.rpm`). The `.dmg` is for
+and RHEL 9 or later (`sudo dnf install ./fillmate-*.x86_64.rpm`). If apt ends with
+"N: Download is performed unsandboxed as root…", that's only apt noting it couldn't read
+your home folder as its `_apt` user; the install went through. The `.dmg` is for
 Apple Silicon Macs (M1 and later); Intel Macs aren't supported. The macOS and Windows
-builds aren't signed yet. On macOS, right-click the app and choose **Open** the first
-time. On Windows, choose **More info → Run anyway**.
+builds aren't signed yet. On macOS, drag fillmate to Applications and open it; when macOS
+says it can't check it, go to **System Settings → Privacy & Security** and choose **Open
+Anyway** (once). On Windows, choose **More info → Run anyway**.
 
 ## First steps
 
@@ -117,7 +120,8 @@ packaging/linux/test-linux.sh    # installs them on clean Ubuntu, Fedora and Alm
 ```
 
 The `.dmg` and `.msi` are built with [Briefcase](https://briefcase.beeware.org) (config
-in `pyproject.toml`). Pushing a `v*` tag runs `.github/workflows/release.yml`, which
+in `pyproject.toml`); the `.dmg` itself is made with dmgbuild from `packaging/macos/` (its background
+comes from `tools/make_dmg_background.py`). Pushing a `v*` tag runs `.github/workflows/release.yml`, which
 builds all of them plus the PyPI package and attaches them to a draft GitHub release.
 Uploading to PyPI is off until the repository variable `PUBLISH_PYPI` is set to `true`.
 
