@@ -7,16 +7,13 @@ import traceback
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QPalette, QPixmap
-from PySide6.QtWidgets import QApplication, QLabel, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication, QGraphicsDropShadowEffect, QLabel, QScrollArea, QVBoxLayout, QWidget,
+)
 
 from .. import FillmateError
 
 THEMES = (("Automatic theme", "auto"), ("Light theme", "light"), ("Dark theme", "dark"))
-# Banner colours: (background, text) for light / dark.
-BANNERS = {
-    "test": {False: ("#ffe3df", "#8a1f11"), True: ("#45201b", "#ffb4a8")},
-    "warn": {False: ("#fff4d6", "#6b4c00"), True: ("#3d3216", "#f3d68a")},
-}
 GNOME_SCHEME = ["org.gnome.desktop.interface", "color-scheme"]
 
 
@@ -92,29 +89,49 @@ def dark_palette():
 
 
 def apply_theme(choice):
-    """Apply the palette; return True when dark."""
+    """Apply the palette and the ink-and-paper stylesheet; return True when dark."""
+    from . import ink
+
     app = QApplication.instance()
     dark = choice == "dark" or (choice == "auto" and system_is_dark(app))
-    app.setPalette(dark_palette() if dark else app.style().standardPalette())
+    ink.set_dark(dark)
+    palette = dark_palette() if dark else app.style().standardPalette()
+    for role, key in ((QPalette.Window, "ground"), (QPalette.Base, "paper"), (QPalette.Text, "label"),
+                      (QPalette.WindowText, "label"), (QPalette.PlaceholderText, "label2"),
+                      (QPalette.Highlight, "hl"), (QPalette.Link, "ink")):
+        palette.setColor(role, QColor(ink.T[key]))
+    palette.setColor(QPalette.HighlightedText, QColor(ink.T["label"]))
+    app.setPalette(palette)
+    app.setStyleSheet(ink.stylesheet())
     return dark
 
-
-def banner_style(kind, dark, bold=False, radius=0):
-    bg, fg = BANNERS[kind][dark]
-    weight = "font-weight:600;" if bold else ""
-    return f"background:{bg}; color:{fg}; {weight} padding:8px 14px; border-radius:{radius}px;"
 
 
 # --- preview ------------------------------------------------------------
 
 class Preview(QScrollArea):
-    """Rendered pages stacked vertically, scaled to the available width."""
+    """Rendered pages stacked vertically, scaled to the available width.
+
+    The pages are paper lying on the window's dot grid; they start below the
+    toolbar and scroll up under its glass.
+    """
+    changed = Signal()
+    zoomed = Signal(float)
+    MAX_W = 640
+    ZOOMS = (0.5, 0.67, 0.8, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0)
 
     def __init__(self, placeholder):
         super().__init__()
+        self.zoom = 1.0  # 1 = fit the page to the column (up to MAX_W)
         self.setWidgetResizable(True)
+        self.setFrameShape(QScrollArea.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.viewport().setAutoFillBackground(False)
         self.inner = QWidget()
+        self.inner.setAutoFillBackground(False)
         self.box = QVBoxLayout(self.inner)
+        self.box.setContentsMargins(12, 76, 12, 32)
+        self.box.setSpacing(24)
         self.box.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         self.setWidget(self.inner)
         self.pixmaps, self.labels = [], []
@@ -124,7 +141,7 @@ class Preview(QScrollArea):
         while self.box.count():
             w = self.box.takeAt(0).widget()
             if w:
-                w.deleteLater()
+                __import__("fillmate.gui.ink", fromlist=["discard"]).discard(w)
         self.pixmaps, self.labels = [], []
 
     def message(self, text):
@@ -133,7 +150,10 @@ class Preview(QScrollArea):
         label.setTextFormat(Qt.PlainText)
         label.setWordWrap(True)
         label.setAlignment(Qt.AlignCenter)
+        label.setProperty("role", "muted")
+        label.setContentsMargins(0, 120, 0, 0)
         self.box.addWidget(label)
+        self.changed.emit()
 
     def set_pages(self, pngs):
         self._clear()
@@ -142,16 +162,59 @@ class Preview(QScrollArea):
             pm.loadFromData(data, "PNG")
             label = QLabel()
             label.setAlignment(Qt.AlignHCenter)
+            shadow = QGraphicsDropShadowEffect(label)
+            shadow.setBlurRadius(40)
+            shadow.setOffset(0, 14)
+            shadow.setColor(QColor(30, 30, 20, 60))
+            label.setGraphicsEffect(shadow)
             self.box.addWidget(label)
             self.pixmaps.append(pm)
             self.labels.append(label)
         self._rescale()
+        self.changed.emit()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._rescale()
 
     def _rescale(self):
-        width = max(200, self.viewport().width() - 24)
+        width = max(200, min(self.MAX_W, self.viewport().width() - 40)) * self.zoom
+        dpr = self.devicePixelRatioF()
         for pm, label in zip(self.pixmaps, self.labels):
-            label.setPixmap(pm.scaledToWidth(width, Qt.SmoothTransformation))
+            scaled = pm.scaledToWidth(int(width * dpr), Qt.SmoothTransformation)
+            scaled.setDevicePixelRatio(dpr)
+            label.setPixmap(scaled)
+
+    def has_pages(self):
+        return bool(self.pixmaps)
+
+    def set_zoom(self, zoom, anchor=None):
+        """Zoom the pages, keeping the point under `anchor` (viewport coordinates) in place."""
+        zoom = max(self.ZOOMS[0], min(self.ZOOMS[-1], zoom))
+        if not self.pixmaps or abs(zoom - self.zoom) < 1e-3:
+            return
+        anchor = anchor or self.viewport().rect().center()
+        h, v = self.horizontalScrollBar(), self.verticalScrollBar()
+        fx = (h.value() + anchor.x()) / max(1, self.inner.width())
+        fy = (v.value() + anchor.y()) / max(1, self.inner.height())
+        self.zoom = zoom
+        self._rescale()
+        self.inner.adjustSize()
+        h.setValue(int(fx * self.inner.width() - anchor.x()))
+        v.setValue(int(fy * self.inner.height() - anchor.y()))
+        self.zoomed.emit(zoom)
+        self.changed.emit()
+
+    def zoom_in(self):
+        self.set_zoom(next((z for z in self.ZOOMS if z > self.zoom + 1e-3), self.ZOOMS[-1]))
+
+    def zoom_out(self):
+        self.set_zoom(next((z for z in reversed(self.ZOOMS) if z < self.zoom - 1e-3), self.ZOOMS[0]))
+
+    def wheelEvent(self, event):
+        if event.modifiers() & Qt.ControlModifier:
+            step = 1.12 if event.angleDelta().y() > 0 else 1 / 1.12
+            self.set_zoom(self.zoom * step, event.position().toPoint())
+            event.accept()
+        else:
+            super().wheelEvent(event)

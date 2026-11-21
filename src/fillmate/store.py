@@ -15,7 +15,7 @@ DEFAULT_SETTINGS = {
     "output_dir": "",
     "theme": "auto",
     "last_pack": "",
-    "test_mode": False,
+    "test_mode": True,  # new users start safe: nothing reaches real recipients
     "test_recipients": [],
     "sender": "gmail",  # gmail | smtp | mail_app
     "smtp": {"host": "", "port": 587, "security": "starttls", "username": "", "from": ""},

@@ -32,8 +32,9 @@ dependencies = [
     "google-auth>=2.30",
     "google-auth-oauthlib>=1.2",
     "keyring>=25",
-    "PySide6-Essentials>=6.7",
+    "PySide6-Essentials>=6.7,<6.12",  # 6.12 over-releases None on Python < 3.12 and crashes the app
     "ruamel.yaml>=0.18",
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
@@ -86,8 +87,9 @@ requires = [
     "google-auth>=2.30",
     "google-auth-oauthlib>=1.2",
     "keyring>=25",
-    "PySide6-Essentials>=6.8",
+    "PySide6-Essentials>=6.8,<6.12",  # see [project].dependencies
     "ruamel.yaml>=0.18",
+    "numpy>=1.24",
 ]
 test_requires = ["pytest"]
 
