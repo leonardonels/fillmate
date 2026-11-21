@@ -28,4 +28,7 @@
   hover) instead of sliding under the toolbar buttons.
 - Dark theme: smoky glass that stays dark over the white page of a preview, fainter rims and selection pills,
   a yellow highlighter with dark text, and visible edges around grouped settings.
+- The dot grid is replaced by a print room: the open pack's name in huge faint Archivo Expanded over the previews,
+  highlighter strokes and a drop of ink under the glass, a registration mark, a ruler, a test-mode
+  label along the edge and a colour bar (label, ink, red pen, highlighter). Other windows get plain paper. The dark theme's ground and paper are warmer.
 - Requires PySide6 below 6.12: 6.12 releases Python's None once too often on Python 3.10–3.11 and the app aborts.

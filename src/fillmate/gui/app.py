@@ -172,7 +172,10 @@ class MainWindow(QMainWindow):
         self.canvas = QWidget()
         self.canvas.resizeEvent = lambda e: self._place()
         self.setCentralWidget(self.canvas)
-        self.content = DotGrid(self.canvas)  # everything under the glass
+        self.content = DotGrid(self.canvas)  # everything under the glass: the print room
+        self.content.room = True
+        self.content.left = SIDEBAR_W + 2 * INSET + 8
+        self.content.type_left = FORM_W + 28  # the big type sits over the previews
         self.glass = GlassLayer(self.content)
         self.frame = Frame(self, self._drag_zone)
         if frame.PLATFORM == "linux":
@@ -566,6 +569,19 @@ class MainWindow(QMainWindow):
         who = ", ".join(self.settings["test_recipients"])
         self.test_banner.setText(f"emails only go to {who}" if who else
                                  "add your own address in Settings to try sending")
+        self._update_room()
+
+    def _update_room(self):
+        """The print room behind everything names the open pack and says where emails go."""
+        pack = getattr(self, "pack", None)
+        who = ", ".join(self.settings.get("test_recipients") or [])
+        edge = (f"Test mode · emails only go to {who}" if who else "Test mode · no test address yet") \
+            if self.settings.get("test_mode") else "Live · emails go to the real recipients"
+        self.content.set_room(heading=pack.name if pack else "fillmate",
+                              side=f"fillmate · form pack · {pack.id}" if pack else "fillmate",
+                              edge=edge,
+                              foot=f"{pack.id if pack else 'fillmate'} · {dt.date.today():%d %b %Y}")
+        self.glass.schedule()
 
     def pack_changed(self):
         pid = self.pack_combo.currentData()
@@ -581,6 +597,7 @@ class MainWindow(QMainWindow):
         for w in (self.save_preset_btn, self.gen_btn):
             w.setEnabled(has_pack)
         self.subtitle.setText(self.pack.name if has_pack else "")
+        self._update_room()
         if not has_pack:
             empty = label("No form pack installed yet.\n\nOpen Settings → Form packs to import one, "
                           "or install the example to try fillmate.", "muted", wrap=True)

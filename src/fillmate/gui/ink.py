@@ -7,6 +7,7 @@ map (the same rounded-rect lens as the design canvas), and draws the rim and a
 soft shadow. The copy is refreshed by GlassLayer.schedule(), which callers run
 whenever the content under the glass changes (scrolling, new previews, resizes).
 """
+import re
 from pathlib import Path
 
 import numpy as np
@@ -35,9 +36,9 @@ LIGHT = {
 DARK = {
     # Dark glass carries a smoky tint, so it stays dark (and its light icons readable) even over the
     # white page of a preview; rims and pills catch less light than on paper.
-    "ink": "#aab9ff", "red": "#ff7a88", "hl": "#e2c341", "ground": "#17181b", "paper": "#232428",
-    "label": "#ecebe7", "label2": "#a7a59e", "rule": "#3a3b41", "dot": QColor(170, 185, 255, 34),
-    "glass": QColor(34, 35, 40, 150), "glass_reg": QColor(30, 31, 36, 120), "rim": QColor(255, 255, 255, 95),
+    "ink": "#aab9ff", "red": "#ff7a88", "hl": "#e8c62e", "ground": "#121211", "paper": "#1f1f1d",
+    "label": "#efeee9", "label2": "#a7a59e", "rule": "#363531", "dot": QColor(170, 185, 255, 34),
+    "glass": QColor(36, 36, 34, 150), "glass_reg": QColor(32, 32, 30, 120), "rim": QColor(255, 255, 255, 95),
     "edge": QColor(255, 255, 255, 26), "shadow": QColor(0, 0, 0), "pill": QColor(255, 255, 255, 40),
     "switch_on": "#8f8d86", "track": QColor(120, 120, 128, 90), "on_ink": "#101114",
     "hover": QColor(255, 255, 255, 30), "pill_rim": 80, "sheen": 34,
@@ -48,6 +49,7 @@ FONTS_DIR = Path(__file__).resolve().parent.parent / "resources" / "fonts"
 UI_FONTS = ["Inter", "Inter Variable", "Cantarell", "Noto Sans", "Segoe UI", "Helvetica Neue", "Arial"]
 HAND_FONTS = ["Caveat", "Kalam", "Patrick Hand", "Comic Neue", "Segoe Print", "Bradley Hand"]
 MONO_FONTS = ["Courier Prime", "Courier New", "DejaVu Sans Mono", "Menlo", "Consolas", "monospace"]
+DISPLAY_FONTS = ["Archivo", "Inter", "Inter Variable", "Arial"]
 _families = {}
 
 
@@ -57,7 +59,7 @@ def load_fonts():
         for path in sorted(FONTS_DIR.glob("*.[ot]tf")):
             QFontDatabase.addApplicationFont(str(path))
     available = set(QFontDatabase.families())
-    for role, wanted in (("ui", UI_FONTS), ("hand", HAND_FONTS), ("mono", MONO_FONTS)):
+    for role, wanted in (("ui", UI_FONTS), ("hand", HAND_FONTS), ("mono", MONO_FONTS), ("display", DISPLAY_FONTS)):
         _families[role] = next((f for f in wanted if f in available), "")
 
 
@@ -185,39 +187,211 @@ def label(text, role=None, wrap=False, plain=True):
 
 # --- paper ------------------------------------------------------------------
 
-_dot_tiles = {}
+INK_DROP = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 200">
+<defs><radialGradient id="g" cx="35%" cy="30%" r="80%"><stop offset="0" stop-color="{0}"/>
+<stop offset=".35" stop-color="{1}"/><stop offset="1" stop-color="{2}"/></radialGradient></defs>
+<path d="M60 10c40-14 90 6 104 44 10 28 46 26 52 56 8 42-40 70-86 62-30-6-44 20-80 12C14 176-6 130 6 96 14 72 2 30 60 10z" fill="url(#g)"/>
+<ellipse cx="70" cy="52" rx="26" ry="11" fill="#ffffff" fill-opacity=".35" transform="rotate(-24 70 52)"/>
+</svg>"""
+_drops = {}
 
 
-def dot_brush():
-    key = T["dot"].rgba()
-    if key not in _dot_tiles:
-        pm = QPixmap(40, 40)
-        pm.setDevicePixelRatio(2)
-        pm.fill(QColor(T["ground"]))
-        p = QPainter(pm)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setPen(Qt.NoPen)
-        p.setBrush(T["dot"])
-        p.drawEllipse(QPointF(10, 10), 1.3, 1.3)
-        p.end()
-        _dot_tiles[key] = QBrush(pm)
-    return _dot_tiles[key]
+DROP_COLORS = {"light": ("#4a5480", "#1b2140", "#07080e"),  # the light theme's ink, nearly black when pooled
+               "dark": ("#9aa8ee", "#4a5596", "#1a1f3d")}   # the dark theme's lighter ink
+
+
+def ink_drop(width, dpr=1.0):
+    """A glossy drop of ink with its soft shadow, as an image `width` px wide at the screen's pixel
+    density (cached per theme and density)."""
+    shade_key = "dark" if QColor(T["ground"]).lightness() < 128 else "light"
+    key = (width, shade_key, dpr)
+    if key in _drops:
+        return _drops[key]
+    from PySide6.QtSvg import QSvgRenderer
+
+    pad, h = 40, int(width * 200 / 220)
+    s = dpr
+    svg = QSvgRenderer(INK_DROP.replace("{0}", DROP_COLORS[shade_key][0]).replace("{1}", DROP_COLORS[shade_key][1])
+                       .replace("{2}", DROP_COLORS[shade_key][2]).encode())
+    img = QImage(int((width + 2 * pad) * s), int((h + 2 * pad) * s), QImage.Format_ARGB32_Premultiplied)
+    img.fill(Qt.transparent)
+    shadow = QImage(img.size(), QImage.Format_ARGB32_Premultiplied)
+    shadow.fill(Qt.transparent)
+    q = QPainter(shadow)
+    q.setRenderHint(QPainter.Antialiasing)
+    svg.render(q, QRectF(pad * s, (pad + 18) * s, width * s, h * s))
+    q.end()
+    a = np.frombuffer(shadow.constBits(), np.uint8).reshape(shadow.height(), shadow.width(), 4).astype(np.float32)
+    alpha = _box_blur(a[..., 3:4], int(9 * s))[..., 0] * 0.38
+    soft = np.zeros_like(a)
+    soft[..., 3] = alpha  # black, premultiplied: colour channels stay 0
+    soft = np.ascontiguousarray(soft.clip(0, 255).astype(np.uint8))
+    shade = QImage(soft.data, soft.shape[1], soft.shape[0], QImage.Format_ARGB32_Premultiplied).copy()
+    q = QPainter(img)
+    q.setRenderHint(QPainter.Antialiasing)  # a QPainter on an image does not smooth edges unless asked
+    q.setRenderHint(QPainter.SmoothPixmapTransform)
+    q.drawImage(0, 0, shade)
+    svg.render(q, QRectF(pad * s, pad * s, width * s, h * s))
+    q.end()
+    img.setDevicePixelRatio(s)
+    _drops[key] = (img, pad)
+    return _drops[key]
+
+
+def _mark_color(alpha=140):
+    c = QColor(T["label"])
+    c.setAlpha(alpha)
+    return c
+
+
+def _highlighter(p, center, w, h, angle):
+    """A broad stroke of highlighter: the theme's yellow, lying under the glass."""
+    p.save()
+    p.translate(center)
+    p.rotate(angle)
+    r = QRectF(-w / 2, -h / 2, w, h)
+    path = QPainterPath()
+    path.addRoundedRect(r, 16, 22)
+    p.fillPath(path, QColor(T["hl"]))
+    p.setClipPath(path)
+    p.setPen(QPen(QColor(0, 0, 0, 13), 2))
+    x = r.left() - h
+    while x < r.right():  # the felt tip's streaks
+        p.drawLine(QPointF(x, r.bottom()), QPointF(x + h * 0.2, r.top()))
+        x += 7
+    shade = QLinearGradient(r.topLeft(), r.bottomLeft())
+    shade.setColorAt(0, QColor(255, 255, 255, 60))
+    shade.setColorAt(0.4, QColor(255, 255, 255, 0))
+    shade.setColorAt(1, QColor(0, 0, 0, 30))
+    p.fillRect(r, shade)
+    p.restore()
 
 
 class DotGrid(QWidget):
-    """The dot-grid paper the window is made of. With `radius` set (a function giving the
-    window's corner radius), it paints round corners and a hairline edge."""
+    """The paper every window is made of: the theme's plain ground.
+
+    With `room` on (the main window) it becomes the print room behind the documents: the open pack's
+    name in huge type, highlighter strokes and a drop of ink under the glass, rulers, a registration mark
+    and edge labels, and a colour bar that doubles as the theme's legend (label, ink, red pen,
+    highlighter). With `radius` set (a function giving the window's corner radius) it paints round
+    corners. (The name is from when it was a dot grid.)"""
 
     radius = None
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.room = False
+        self.heading = ""          # the open pack's name: the big type
+        self.left = 300            # where the content starts (right of the sidebar)
+        self.type_left = 0         # how far right of that the big type starts
+        self.side_label = ""       # along the left edge of the content
+        self.edge_label = ""       # along the right edge
+        self.foot_label = ""       # along the bottom
+        self._cache = None
+
+    def set_room(self, heading="", side="", edge="", foot=""):
+        values = (heading, side, edge, foot)
+        if values != (self.heading, self.side_label, self.edge_label, self.foot_label):
+            self.heading, self.side_label, self.edge_label, self.foot_label = values
+            self.update()
+
     def paintEvent(self, _event):
-        p = QPainter(self)
         r = self.radius() if self.radius else 0
-        if not r:
-            p.fillRect(self.rect(), dot_brush())
-            return
-        p.setRenderHint(QPainter.Antialiasing)
-        p.fillPath(glass_path(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), r), dot_brush())
+        key = (self.size().width(), self.size().height(), r, T["ground"], T["hl"], T["label"], self.room,
+               self.heading, self.left, self.side_label, self.edge_label, self.foot_label)
+        if self._cache is None or self._cache[0] != key:
+            dpr = self.devicePixelRatioF()
+            pm = QPixmap(self.size() * dpr)
+            pm.setDevicePixelRatio(dpr)
+            pm.fill(Qt.transparent)
+            q = QPainter(pm)
+            q.setRenderHint(QPainter.Antialiasing)
+            self._paint(q, r)
+            q.end()
+            self._cache = (key, pm)
+        QPainter(self).drawPixmap(0, 0, self._cache[1])
+
+    def _paint(self, p, radius):
+        rect = QRectF(self.rect())
+        if radius:
+            p.setClipPath(glass_path(rect.adjusted(0.5, 0.5, -0.5, -0.5), radius))
+        p.fillRect(rect, QColor(T["ground"]))
+        if self.room:
+            self._paint_room(p, rect)
+
+    def _paint_room(self, p, rect):
+        w, h = rect.width(), rect.height()
+        # The pack's name, huge and faint: which form you are filling.
+        name = re.sub(r"\s*\([^)]*\)", "", self.heading).strip()  # "Travel request (example)" → TRAVEL REQUEST
+        words = name.upper().split()
+        if words:
+            lines = [" ".join(words)]
+            if len(words) > 1:
+                cut = min(range(1, len(words)), key=lambda i: abs(len(" ".join(words[:i])) - len(" ".join(words[i:]))))
+                lines = [" ".join(words[:cut]), " ".join(words[cut:])]
+            f = font("display", 100, QFont.ExtraBold)
+            stretch = 1.0
+            if _families.get("display") == "Archivo":  # a real expanded cut, like a poster's display type
+                f.setVariableAxis(QFont.Tag("wdth"), 125)
+            else:
+                stretch = 1.25  # no wide font: widen what there is
+            p.setFont(f)
+            widest = max(p.fontMetrics().horizontalAdvance(line) for line in lines) * stretch
+            x0 = self.left + self.type_left  # over the previews, where the paper shows
+            room = w - x0 - 50
+            px = max(48, min(176, 100 * room / max(1, widest + (60 if len(lines) > 1 else 0))))
+            f.setPixelSize(int(px))
+            p.setFont(f)
+            c = QColor(T["label"])
+            c.setAlpha(15)
+            p.setPen(c)
+            y = h * 0.50
+            for i, line in enumerate(lines):
+                p.save()
+                p.translate(x0 + i * px * 0.6, y + i * px * 0.95)
+                p.scale(stretch, 1)
+                p.drawText(QPointF(0, 0), line)
+                p.restore()
+        # Highlighter under the glass on the right, a drop of ink under the sidebar.
+        _highlighter(p, QPointF(w - 245, 18), 330, 96, 9)
+        _highlighter(p, QPointF(w - 250, h - 66), 280, 100, -6)
+        img, pad = ink_drop(260, self.devicePixelRatioF())
+        p.save()
+        p.setRenderHint(QPainter.SmoothPixmapTransform)  # it is drawn rotated
+        p.translate(70, h * 0.56)  # behind the sidebar's empty middle, where the glass can bend it
+        p.rotate(-12)
+        p.drawImage(QPointF(-130 - pad, -118 - pad), img)
+        p.restore()
+        # Printer's marks: rulers, registration, labels, colour bar.
+        mark = _mark_color()
+        p.setPen(QPen(mark, 1))
+        for x, top in ((14, 140.0), (w - 20, h - 440)):
+            y = top
+            while y < top + 300:
+                p.drawLine(QPointF(x, y), QPointF(x + 6, y))
+                y += 8
+        cx, cy = self.left + self.type_left + 40, h - 19
+        p.drawEllipse(QPointF(cx, cy), 7, 7)
+        p.drawLine(QPointF(cx - 13, cy), QPointF(cx + 13, cy))
+        p.drawLine(QPointF(cx, cy - 13), QPointF(cx, cy + 13))
+        mono = font("mono", 10)
+        mono.setLetterSpacing(QFont.AbsoluteSpacing, 1.4)
+        mono.setCapitalization(QFont.AllUppercase)
+        p.setFont(mono)
+        p.setPen(mark)
+        for text, x, y0 in ((self.edge_label, w - 12, 130),):
+            if text:
+                p.save()
+                p.translate(x, y0)
+                p.rotate(90)
+                p.drawText(QPointF(0, 0), text)
+                p.restore()
+        if self.foot_label:
+            p.drawText(QPointF(cx + 26, h - 15), self.foot_label)
+        x = w - 40 - 4 * 15
+        for color in (T["label"], T["ink"], T["red"], T["hl"]):
+            p.fillRect(QRectF(x, h - 26, 12, 12), QColor(color))
+            x += 15
 
 
 class Sheet(QFrame):
