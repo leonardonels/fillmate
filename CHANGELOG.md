@@ -31,4 +31,6 @@
 - The dot grid is replaced by a print room: the open pack's name in huge faint Archivo Expanded over the previews,
   highlighter strokes and a drop of ink under the glass, a registration mark, a ruler, a test-mode
   label along the edge and a colour bar (label, ink, red pen, highlighter). Other windows get plain paper. The dark theme's ground and paper are warmer.
+- New app icon in Liquid Glass layers: a tilted frosted sheet filled in by hand under the highlighter, and a
+  drop of ink on a paper tile.
 - Requires PySide6 below 6.12: 6.12 releases Python's None once too often on Python 3.10–3.11 and the app aborts.
