@@ -34,55 +34,50 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {name: "Linux .rpm (Fedora 42)", os: ubuntu-24.04, platform: linux, format: system,
-             target: "fedora:42", files: "dist/*.rpm"}
-          - {name: "macOS .dmg", os: macos-latest, platform: macOS, format: app,
-             target: "", files: "dist/*.dmg"}
-          - {name: "Windows .msi", os: windows-latest, platform: windows, format: app,
-             target: "", files: "dist/*.msi"}
+          - {name: "macOS .dmg", id: dmg, os: macos-latest, platform: macOS, files: "dist/*.dmg"}
+          - {name: "Windows .msi", id: msi, os: windows-latest, platform: windows, files: "dist/*.msi"}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
       - run: python -m pip install briefcase
-      - name: Build (Linux, inside a container of the target distro)
-        if: matrix.platform == 'linux'
+      - name: Build (unsigned)
         run: |
-          briefcase create linux system --target ${{ matrix.target }} --no-input
-          briefcase build linux system --target ${{ matrix.target }} --no-input
-          briefcase package linux system --target ${{ matrix.target }} --no-input
-      - name: Build (macOS / Windows, unsigned)
-        if: matrix.platform != 'linux'
-        run: |
-          briefcase create ${{ matrix.platform }} ${{ matrix.format }} --no-input
-          briefcase build ${{ matrix.platform }} ${{ matrix.format }} --no-input
-          briefcase package ${{ matrix.platform }} ${{ matrix.format }} --adhoc-sign --no-input
+          briefcase create ${{ matrix.platform }} app --no-input
+          briefcase build ${{ matrix.platform }} app --no-input
+          briefcase package ${{ matrix.platform }} app --adhoc-sign --no-input
       - uses: actions/upload-artifact@v4
         with:
-          name: installer-${{ strategy.job-index }}
+          name: installer-${{ matrix.id }}
           path: ${{ matrix.files }}
           if-no-files-found: error
 
-  deb:
-    # One self-contained .deb (it carries its own Python) for Ubuntu 22.04 and later.
-    name: Linux .deb (Ubuntu 22.04+)
+  linux:
+    # One self-contained bundle (it carries its own Python), packaged as a .deb for
+    # Ubuntu 22.04+ and an .rpm for Fedora / RHEL 9+, then installed and tested on each.
+    name: Linux .deb and .rpm
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
-      - run: packaging/linux/build-deb.sh
-      - run: packaging/linux/test-deb.sh
+      - run: packaging/linux/build-linux.sh
+      - run: packaging/linux/test-linux.sh
       - uses: actions/upload-artifact@v4
         with:
           name: installer-deb
           path: dist/*.deb
           if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-rpm
+          path: dist/*.rpm
+          if-no-files-found: error
 
   github-release:
     name: Draft GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [python-package, installers, deb]
+    needs: [python-package, installers, linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -104,7 +99,7 @@ jobs:
     # "trusted publisher" set up once on pypi.org for this repo and workflow,
     # and a GitHub environment named "pypi".
     if: startsWith(github.ref, 'refs/tags/v') && vars.PUBLISH_PYPI == 'true'
-    needs: [python-package, installers, deb]
+    needs: [python-package, installers, linux]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

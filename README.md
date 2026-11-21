@@ -28,7 +28,8 @@ fillmate                   # opens the app
 
 Or download an installer (`.deb`, `.rpm`, `.dmg`, `.msi`) from the
 [Releases](https://github.com/leonardonels/fillmate/releases) page. The `.deb` works on
-Ubuntu 22.04 and later (`sudo apt install ./fillmate_*_amd64.deb`). The `.dmg` is for
+Ubuntu 22.04 and later (`sudo apt install ./fillmate_*_amd64.deb`), the `.rpm` on Fedora
+and RHEL 9 or later (`sudo dnf install ./fillmate-*.x86_64.rpm`). The `.dmg` is for
 Apple Silicon Macs (M1 and later); Intel Macs aren't supported. The macOS and Windows
 builds aren't signed yet. On macOS, right-click the app and choose **Open** the first
 time. On Windows, choose **More info → Run anyway**.
@@ -106,18 +107,19 @@ python -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
 ### Installers
 
-The `.deb` carries its own Python, so one file installs on Ubuntu 22.04 and every later
-release. It is built in an Ubuntu 22.04 container (needs Docker and uv):
+The `.deb` and `.rpm` are made from one bundle that carries its own Python, so one file
+installs on every supported release. It is built in an Ubuntu 22.04 container (needs
+Docker and uv):
 
 ```bash
-packaging/linux/build-deb.sh   # writes dist/fillmate_<version>_amd64.deb
-packaging/linux/test-deb.sh    # installs it on clean Ubuntu 22.04, 24.04 and the latest release
+packaging/linux/build-linux.sh   # writes dist/fillmate_<version>_amd64.deb and .x86_64.rpm
+packaging/linux/test-linux.sh    # installs them on clean Ubuntu, Fedora and AlmaLinux
 ```
 
-The `.rpm`, `.dmg` and `.msi` are built with [Briefcase](https://briefcase.beeware.org)
-(config in `pyproject.toml`). Pushing a `v*` tag runs `.github/workflows/release.yml`,
-which builds all of them plus the PyPI package and attaches them to a draft GitHub release. Uploading to PyPI is off until the
-repository variable `PUBLISH_PYPI` is set to `true`.
+The `.dmg` and `.msi` are built with [Briefcase](https://briefcase.beeware.org) (config
+in `pyproject.toml`). Pushing a `v*` tag runs `.github/workflows/release.yml`, which
+builds all of them plus the PyPI package and attaches them to a draft GitHub release.
+Uploading to PyPI is off until the repository variable `PUBLISH_PYPI` is set to `true`.
 
 ## License
 

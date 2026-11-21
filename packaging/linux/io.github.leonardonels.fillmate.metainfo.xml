@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata: what GNOME Software, KDE Discover and Ubuntu's App Center show.
+     build-linux.sh fills in @VERSION@ and @DATE@. Check with: appstreamcli validate <file> -->
+<component type="desktop-application">
+  <id>io.github.leonardonels.fillmate</id>
+  <name>fillmate</name>
+  <summary>Fill recurring paperwork from reusable form packs</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.leonardonels">
+    <name>Leonardo Nels</name>
+  </developer>
+  <description>
+    <p>
+      fillmate turns the forms you fill in again and again into a small form: type what
+      changes, check the preview, and email the filled PDF and Word documents.
+    </p>
+    <ul>
+      <li>Fills flat and fillable PDFs and Word documents from reusable form packs</li>
+      <li>Remembers your details, so you only type what is new each time</li>
+      <li>Shows a preview before anything is saved or sent</li>
+      <li>Sends the result through Gmail or SMTP, or opens a draft in your mail app</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.leonardonels.fillmate.desktop</launchable>
+  <icon type="stock">io.github.leonardonels.fillmate</icon>
+  <url type="homepage">https://github.com/leonardonels/fillmate</url>
+  <url type="bugtracker">https://github.com/leonardonels/fillmate/issues</url>
+  <categories>
+    <category>Office</category>
+  </categories>
+  <provides>
+    <binary>fillmate</binary>
+    <binary>fillmate-gui</binary>
+  </provides>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

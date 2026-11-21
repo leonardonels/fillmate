@@ -59,7 +59,7 @@ packages = ["src/fillmate"]
 testpaths = ["tests"]
 
 # --- Native installers (https://briefcase.beeware.org) -----------------------
-# briefcase create / build / package  →  .deb, .rpm, .dmg, .msi
+# briefcase create / build / package  →  .dmg, .msi (Linux packages: packaging/linux/)
 # Keep `requires` in sync with [project].dependencies.
 
 [tool.briefcase]
