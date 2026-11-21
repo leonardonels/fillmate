@@ -10,7 +10,9 @@ whenever the content under the glass changes (scrolling, new previews, resizes).
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal,
+)
 from PySide6.QtGui import (
     QBrush, QColor, QFont, QFontDatabase, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPen,
     QPixmap,
@@ -509,8 +511,63 @@ def hover_css():
     return f"rgba({c.red()},{c.green()},{c.blue()},{c.alphaF():.2f})"
 
 
-def paint_hover(p, path):
-    """The one hover look: a light wash with a brighter top edge, the way glass catches light."""
+class Tween(QObject):
+    """A number that eases toward a target, repainting `widget` on every step: hover fades,
+    the switch knob's slide, a selection pill gliding to the next option."""
+
+    IN, OUT = 120, 220  # ms: light comes up quickly and fades a little slower
+
+    def __init__(self, widget, value=0.0):
+        super().__init__(widget)
+        self.widget, self.value, self.target = widget, float(value), float(value)
+        self.anim = QVariantAnimation(self)
+        self.anim.setEasingCurve(QEasingCurve.OutCubic)
+        self.anim.valueChanged.connect(self._step)
+
+    def _step(self, v):
+        self.value = float(v)
+        self.widget.update()
+
+    def to(self, target, ms=None):
+        target = float(target)
+        if target == self.target and (self.anim.state() == QVariantAnimation.Running or self.value == target):
+            return
+        self.target = target
+        self.anim.stop()
+        if not self.widget.isVisible():
+            self.value = target
+            self.widget.update()
+            return
+        self.anim.setStartValue(self.value)
+        self.anim.setEndValue(target)
+        self.anim.setDuration(ms if ms is not None else (self.IN if target > self.value else self.OUT))
+        self.anim.start()
+
+    def set(self, value):
+        """Jump without animating."""
+        self.anim.stop()
+        self.value = self.target = float(value)
+        self.widget.update()
+
+
+def lerp_rect(rects, pos):
+    """The rect at a fractional index between neighbouring rects (for a pill on its way)."""
+    if not rects:
+        return QRectF()
+    pos = max(0.0, min(pos, len(rects) - 1.0))
+    i = int(pos)
+    a, b, f = rects[i], rects[min(i + 1, len(rects) - 1)], pos - i
+    return QRectF(a.x() + (b.x() - a.x()) * f, a.y() + (b.y() - a.y()) * f,
+                  a.width() + (b.width() - a.width()) * f, a.height() + (b.height() - a.height()) * f)
+
+
+def paint_hover(p, path, amount=1.0):
+    """The one hover look: a light wash with a brighter top edge, the way glass catches light.
+    `amount` (0–1) fades it in and out."""
+    if amount <= 0.01:
+        return
+    p.save()
+    p.setOpacity(p.opacity() * min(1.0, amount))
     p.fillPath(path, T["hover"])
     r = path.boundingRect()
     edge = QLinearGradient(r.topLeft(), r.bottomLeft())
@@ -521,6 +578,7 @@ def paint_hover(p, path):
     p.setPen(QPen(QBrush(edge), 1))
     p.setBrush(Qt.NoBrush)
     p.drawPath(path)
+    p.restore()
 
 
 def discard(w):
@@ -621,6 +679,7 @@ class GlassPanel(QWidget):
         self.layer = None
         self.hoverable = False  # brighten under the pointer (buttons)
         self._hover = False
+        self.hover = Tween(self)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_Hover)
         self.shadow = GlassShadow(parent, radius) if parent is not None and shadow else None
@@ -665,12 +724,12 @@ class GlassPanel(QWidget):
 
     def enterEvent(self, event):
         self._hover = True
-        self.update()
+        self.hover.to(1)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
         self._hover = False
-        self.update()
+        self.hover.to(0)
         super().leaveEvent(event)
 
     def capture(self, backdrop):
@@ -705,8 +764,8 @@ class GlassPanel(QWidget):
         p.restore()
         # A prominent action is clear glass too; only its label is in ink.
         paint_glass_skin(p, r, self.radius, T["glass_reg"] if self.regular else T["glass"])
-        if self.hoverable and self._hover and self.isEnabled():
-            paint_hover(p, path)
+        if self.hoverable and self.isEnabled():
+            paint_hover(p, path, self.hover.value)
         self.paint_content(p)
 
     def paint_content(self, p):
@@ -726,6 +785,7 @@ class GlassButton(GlassPanel):
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.StrongFocus)
         self._down = False
+        self.press = Tween(self)
 
     def setText(self, text):
         self.text = text
@@ -745,12 +805,12 @@ class GlassButton(GlassPanel):
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self._down = True
-            self.update()
+            self.press.to(1, 90)
 
     def mouseReleaseEvent(self, event):
         was = self._down
         self._down = False
-        self.update()
+        self.press.to(0, 320)
         if was and self.rect().contains(event.position().toPoint()) and self.isEnabled():
             self.clicked.emit()
 
@@ -761,8 +821,13 @@ class GlassButton(GlassPanel):
             super().keyPressEvent(event)
 
     def paint_content(self, p):
-        if self._down:
-            p.fillPath(glass_path(QRectF(self.rect()), self.radius), QColor(0, 0, 0, 18))
+        k = self.press.value
+        if k > 0.01:  # pressed: the glass catches more light and the label swells, then settles
+            paint_hover(p, glass_path(QRectF(self.rect()), self.radius), k)
+            c = self.rect().center()
+            p.translate(c.x(), c.y())
+            p.scale(1 + 0.06 * k, 1 + 0.06 * k)
+            p.translate(-c.x(), -c.y())
         color = QColor(T["ink"] if self.tint else T["label"])
         if not self.isEnabled():
             color = QColor(T["label2"])
@@ -791,6 +856,16 @@ class GlassGroup(GlassPanel):
         self.row = QHBoxLayout(self)
         self.row.setContentsMargins(4, 4, 4, 4)
         self.row.setSpacing(2)
+        self._tweens = {}
+
+    def eventFilter(self, obj, event):
+        tween = self._tweens.get(obj)
+        if tween is not None:
+            if event.type() == QEvent.Enter and obj.isEnabled():
+                tween.to(1)
+            elif event.type() in (QEvent.Leave, QEvent.Hide, QEvent.EnabledChange):
+                tween.to(0)
+        return False
 
     def add(self, icon_name, tooltip, slot=None, checkable=False):
         b = QToolButton(self)
@@ -803,9 +878,11 @@ class GlassGroup(GlassPanel):
         b.setCheckable(checkable)
         b.setCursor(Qt.PointingHandCursor)
         b.setStyleSheet("QToolButton { border-radius: 18px; background: transparent; }"
-                        f"QToolButton:hover {{ background: {hover_css()}; }}"
+                        "QToolButton:hover { background: transparent; }"
                         "QToolButton:checked { background: transparent; }"
                         "QToolButton:disabled { background: transparent; }")
+        self._tweens[b] = Tween(self)
+        b.installEventFilter(self)
         if slot:
             b.clicked.connect(slot)
         b.toggled.connect(lambda _on: self.update())
@@ -825,6 +902,9 @@ class GlassGroup(GlassPanel):
             b = self.row.itemAt(i).widget()
             if b and b.isCheckable() and b.isChecked():
                 paint_lens_pill(p, QRectF(b.geometry()))
+            elif b and b in self._tweens:
+                r = QRectF(b.geometry())
+                paint_hover(p, glass_path(r, r.height() / 2), self._tweens[b].value)
 
 
 class GlassSegmented(GlassPanel):
@@ -836,6 +916,9 @@ class GlassSegmented(GlassPanel):
         super().__init__(parent, radius=22)
         self.labels, self.current = list(labels), 0
         self.hovered = -1
+        self.max_width = None  # set by the window: the room between the title and the buttons
+        self.pill = Tween(self)  # where the selection pill is, as a (fractional) index
+        self.hover_fade = Tween(self)
         self.setMouseTracking(True)
         self.setFixedHeight(44)
         self.setCursor(Qt.PointingHandCursor)
@@ -847,12 +930,39 @@ class GlassSegmented(GlassPanel):
         self.labels = list(labels)
         self.current = max(0, min(current, len(self.labels) - 1))
         self._fit()
+        self.pill.set(self.current)
         self.update()
+
+    MIN_TAB = 84
+    SPARE = 40  # most a tab grows by when the bar has room
+
+    def set_max_width(self, width):
+        if width != self.max_width:
+            self.max_width = width
+            self._fit()
+            self.update()
 
     def _fit(self):
         from PySide6.QtGui import QFontMetrics
         fm = QFontMetrics(font("ui", 14, QFont.DemiBold))
-        widths = [max(84, 32 + fm.horizontalAdvance(t)) for t in self.labels] or [84]
+        widths = [max(self.MIN_TAB, 32 + fm.horizontalAdvance(t)) for t in self.labels] or [self.MIN_TAB]
+        room = (self.max_width or 0) - 8
+        if self.max_width and sum(widths) > room:
+            # Too wide: the longest names give way first (short ones like "Email" stay whole),
+            # down to a cap that makes everything fit; their text is shortened with "…".
+            ordered, used, cap = sorted(widths), 0, room / len(widths)
+            for i, w in enumerate(ordered):
+                left = len(ordered) - i
+                if used + w * left >= room:  # from here on every tab is cut to the same width
+                    cap = (room - used) / left
+                    break
+                used += w
+            cap = max(self.MIN_TAB, cap)
+            widths = [min(w, int(cap)) for w in widths]
+        elif self.max_width:  # room to spare: give every tab more air, up to a point
+            extra = min(self.SPARE, (room * 0.85 - sum(widths)) / len(widths))
+            if extra > 0:
+                widths = [int(w + extra) for w in widths]
         self.setFixedWidth(8 + sum(widths))
         self._widths = widths
 
@@ -865,7 +975,7 @@ class GlassSegmented(GlassPanel):
     def set_current(self, index, emit=True):
         if 0 <= index < len(self.labels) and index != self.current:
             self.current = index
-            self.update()
+            self.pill.to(index, 280)
             if emit:
                 self.changed.emit(index)
 
@@ -877,11 +987,16 @@ class GlassSegmented(GlassPanel):
     def mouseMoveEvent(self, event):
         over = next((i for i, r in enumerate(self._rects()) if r.contains(event.position())), -1)
         if over != self.hovered:
-            self.hovered = over
-            self.update()
+            if over >= 0:
+                self.hovered = over
+                self.hover_fade.set(0)
+                self.hover_fade.to(1)
+            else:
+                self.hover_fade.to(0)
+            self.setToolTip(self.labels[over] if over >= 0 else "")  # the whole name, when it is shortened
 
     def leaveEvent(self, event):
-        self.hovered = -1
+        self.hover_fade.to(0)
         super().leaveEvent(event)
 
     def keyPressEvent(self, event):
@@ -893,14 +1008,17 @@ class GlassSegmented(GlassPanel):
             super().keyPressEvent(event)
 
     def paint_content(self, p):
-        for i, r in enumerate(self._rects()):
-            if i == self.current:
-                paint_lens_pill(p, r)
-            elif i == self.hovered:
-                paint_hover(p, glass_path(r, r.height() / 2))
+        rects = list(self._rects())
+        if 0 <= self.hovered < len(rects) and self.hovered != self.current:
+            r = rects[self.hovered]
+            paint_hover(p, glass_path(r, r.height() / 2), self.hover_fade.value)
+        if rects:
+            paint_lens_pill(p, lerp_rect(rects, self.pill.value))
+        for i, r in enumerate(rects):
             p.setPen(QColor(T["label"]))
             p.setFont(font("ui", 14, QFont.DemiBold if i == self.current else QFont.Medium))
-            p.drawText(r, Qt.AlignCenter, self.labels[i])
+            text = p.fontMetrics().elidedText(self.labels[i], Qt.ElideMiddle, int(r.width()) - 24)
+            p.drawText(r, Qt.AlignCenter, text)
         if self.hasFocus():
             p.setPen(QPen(QColor(T["ink"]), 1.5))
             p.setBrush(Qt.NoBrush)
@@ -921,7 +1039,11 @@ class GlassSwitch(QAbstractButton):
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.TabFocus)
         self.setFixedSize(self.W + 6, self.H + 6)  # room for the keyboard focus ring
-        self.toggled.connect(lambda _on: self.update())
+        self.slide = Tween(self, 1.0 if checked else 0.0)
+        self.hold = Tween(self)
+        self.toggled.connect(lambda on: self.slide.to(1 if on else 0, 260))
+        self.pressed.connect(lambda: self.hold.to(1, 110))
+        self.released.connect(lambda: self.hold.to(0, 260))
         self._keyboard_focus = False
 
     def sizeHint(self):
@@ -939,11 +1061,15 @@ class GlassSwitch(QAbstractButton):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r = QRectF(3, 3, self.W, self.H)
-        on = self.isChecked()
+        if self.slide.target != (1.0 if self.isChecked() else 0.0):  # set from code before showing
+            self.slide.set(1.0 if self.isChecked() else 0.0)
+        s, held = self.slide.value, self.hold.value
         if not self.isEnabled():
             p.setOpacity(0.45)
         p.setPen(Qt.NoPen)
-        track = QColor(T["switch_on"]) if on else QColor(T["track"])
+        a, b = QColor(T["track"]), QColor(T["switch_on"])
+        track = QColor.fromRgbF(a.redF() + (b.redF() - a.redF()) * s, a.greenF() + (b.greenF() - a.greenF()) * s,
+                                a.blueF() + (b.blueF() - a.blueF()) * s, a.alphaF() + (b.alphaF() - a.alphaF()) * s)
         p.setBrush(track)
         p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
         # a soft inner shade along the top of the track
@@ -953,16 +1079,24 @@ class GlassSwitch(QAbstractButton):
         p.setBrush(shade)
         p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
         kw, kh = 30, self.H - 4
-        knob = QRectF(r.right() - 2 - kw if on else r.left() + 2, r.top() + 2, kw, kh)
-        if self.isDown():  # held: the knob grows and turns to glass
-            knob = knob.adjusted(-3, -3, 3, 3)
-            paint_lens_pill(p, knob)
-        else:
-            for i, a in enumerate((22, 10)):
-                p.setBrush(QColor(0, 0, 0, a))
-                p.drawRoundedRect(knob.adjusted(-0.5, 0.5 + i, 0.5, 1 + i), kh / 2, kh / 2)
+        left, right = r.left() + 2, r.right() - 2 - kw
+        knob = QRectF(left + (right - left) * s, r.top() + 2, kw, kh)
+        g = 3 * held  # held: the knob grows and turns to glass
+        knob = knob.adjusted(-g, -g, g, g)
+        if held < 0.99:
+            p.save()
+            p.setOpacity(p.opacity() * (1 - held))
+            for i, al in enumerate((22, 10)):
+                p.setBrush(QColor(0, 0, 0, al))
+                p.drawRoundedRect(knob.adjusted(-0.5, 0.5 + i, 0.5, 1 + i), knob.height() / 2, knob.height() / 2)
             p.setBrush(QColor("#ffffff"))
-            p.drawRoundedRect(knob, kh / 2, kh / 2)
+            p.drawRoundedRect(knob, knob.height() / 2, knob.height() / 2)
+            p.restore()
+        if held > 0.01:
+            p.save()
+            p.setOpacity(p.opacity() * held)
+            paint_lens_pill(p, knob)
+            p.restore()
         if self._keyboard_focus and self.hasFocus():
             p.setOpacity(1)
             p.setPen(QPen(QColor(T["ink"]), 1.5))
@@ -1179,6 +1313,9 @@ class SideButton(QAbstractButton):
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedHeight(38)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.hover = Tween(self)
+        self.sel = Tween(self)
+        self.toggled.connect(lambda on: self.sel.to(1 if on else 0, 240 if on else 160))
 
     def sizeHint(self):
         return QSize(200, 38)
@@ -1187,10 +1324,16 @@ class SideButton(QAbstractButton):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r = QRectF(self.rect()).adjusted(3, 1, -3, -5)  # room for the pill's shadow, which is drawn below it
-        if self.isChecked():
-            paint_lens_pill(p, r, 12)
-        elif self.underMouse():
-            paint_hover(p, glass_path(r, 12))
+        if self.sel.target != (1.0 if self.isChecked() else 0.0):  # checked from code before it was shown
+            self.sel.set(1.0 if self.isChecked() else 0.0)
+        s = self.sel.value
+        paint_hover(p, glass_path(r, 12), self.hover.value * (1 - s))
+        if s > 0.01:  # the pill fades in and settles from a little larger
+            p.save()
+            p.setOpacity(s)
+            g = 2.5 * (1 - s)
+            paint_lens_pill(p, r.adjusted(-g, -g / 2, g, g / 2), 12)
+            p.restore()
         x = 12
         color = QColor(T["label2"] if self.muted else T["label"])
         if not self.isEnabled():
@@ -1209,11 +1352,11 @@ class SideButton(QAbstractButton):
             p.drawPath(glass_path(r, 12))
 
     def enterEvent(self, event):
-        self.update()
+        self.hover.to(1)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self.update()
+        self.hover.to(0)
         super().leaveEvent(event)
 
 
@@ -1284,16 +1427,25 @@ class MenuRow(QAbstractButton):
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedHeight(36)
         self.setAttribute(Qt.WA_Hover)
+        self.hover = Tween(self)
 
     def sizeHint(self):
         return QSize(200, 36)
+
+    def focusInEvent(self, event):
+        self.hover.to(1)
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event):
+        if not self.underMouse():
+            self.hover.to(0)
+        super().focusOutEvent(event)
 
     def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        if self.underMouse() or self.hasFocus():
-            paint_hover(p, glass_path(r, 11))
+        paint_hover(p, glass_path(r, 11), self.hover.value)
         color = QColor(T["red"] if self.danger else T["label"])
         x = 12
         if self.icon_name:
@@ -1305,11 +1457,11 @@ class MenuRow(QAbstractButton):
         p.drawText(QRectF(x, 0, self.width() - x, self.height()), Qt.AlignVCenter, text)
 
     def enterEvent(self, event):
-        self.update()
+        self.hover.to(1)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self.update()
+        self.hover.to(1 if self.hasFocus() else 0)
         super().leaveEvent(event)
 
 
@@ -1383,6 +1535,8 @@ class ChoiceRow(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.items, self.index, self.hovered = [], -1, -1
+        self.pill = Tween(self)
+        self.hover_fade = Tween(self)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.StrongFocus)
         self.setCursor(Qt.PointingHandCursor)
@@ -1392,6 +1546,7 @@ class ChoiceRow(QWidget):
         self.items.append((text, data))
         if self.index < 0:
             self.index = 0
+            self.pill.set(0)
         self.updateGeometry()
         self.update()
 
@@ -1410,7 +1565,7 @@ class ChoiceRow(QWidget):
     def setCurrentIndex(self, i):
         if 0 <= i < len(self.items) and i != self.index:
             self.index = i
-            self.update()
+            self.pill.to(i, 280)
             self.currentIndexChanged.emit(i)
 
     def _widths(self):
@@ -1438,12 +1593,15 @@ class ChoiceRow(QWidget):
     def mouseMoveEvent(self, event):
         over = next((i for i, r in enumerate(self._rects()) if r.contains(event.position())), -1)
         if over != self.hovered:
-            self.hovered = over
-            self.update()
+            if over >= 0:
+                self.hovered = over
+                self.hover_fade.set(0)
+                self.hover_fade.to(1)
+            else:
+                self.hover_fade.to(0)
 
     def leaveEvent(self, event):
-        self.hovered = -1
-        self.update()
+        self.hover_fade.to(0)
         super().leaveEvent(event)
 
     def keyPressEvent(self, event):
@@ -1462,11 +1620,12 @@ class ChoiceRow(QWidget):
             return
         track = QRectF(0.5, 0.5, rects[-1].right() + 2.5, self.height() - 1)
         p.fillPath(glass_path(track, track.height() / 2), QColor(120, 120, 128, 30))
+        if 0 <= self.hovered < len(rects) and self.hovered != self.index:
+            r = rects[self.hovered]
+            paint_hover(p, glass_path(r, r.height() / 2), self.hover_fade.value)
+        if self.index >= 0:
+            paint_lens_pill(p, lerp_rect(rects, self.pill.value))
         for i, r in enumerate(rects):
-            if i == self.index:
-                paint_lens_pill(p, r)
-            elif i == self.hovered:
-                paint_hover(p, glass_path(r, r.height() / 2))
             p.setPen(QColor(T["label"]))
             p.setFont(font("ui", 13, QFont.DemiBold if i == self.index else QFont.Normal))
             p.drawText(r, Qt.AlignCenter, self.items[i][0])

@@ -177,6 +177,7 @@ class _CaptionButton(QAbstractButton):
         self.setToolTip({"minimize": "Minimize", "maximize": "Maximize", "close": "Close"}[kind])
         self.setAccessibleName(self.toolTip())
         self.setAttribute(Qt.WA_Hover)
+        self.hover = ink.Tween(self)
         self.clicked.connect(self._act)
 
     def _act(self):
@@ -189,23 +190,26 @@ class _CaptionButton(QAbstractButton):
             win.close()
 
     def enterEvent(self, e):
-        self.update()
+        self.hover.to(1)
         super().enterEvent(e)
 
     def leaveEvent(self, e):
-        self.update()
+        self.hover.to(0)
         super().leaveEvent(e)
 
     def paintEvent(self, _e):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r = QRectF(self.rect())
-        hot = self.underMouse()
-        red = hot and self.kind == "close" and self.parentWidget().red_close
-        if red:
-            p.fillPath(glass_path(r, 18), QColor(WindowsCaption.RED))
-        elif hot:
-            paint_hover(p, glass_path(r, 18))
+        h = self.hover.value
+        red = self.kind == "close" and self.parentWidget().red_close
+        if red and h > 0.01:
+            c = QColor(WindowsCaption.RED)
+            c.setAlphaF(h)
+            p.fillPath(glass_path(r, 18), c)
+        elif not red:
+            paint_hover(p, glass_path(r, 18), h)
+        red = red and h > 0.5
         name = {"minimize": "minus", "close": "close"}[self.kind] if self.kind != "maximize" else (
             "restore" if self.window().isMaximized() else "square")
         color = "#ffffff" if red else (T["label"] if self.active else T["label2"])

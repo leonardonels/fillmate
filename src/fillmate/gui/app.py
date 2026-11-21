@@ -409,9 +409,13 @@ class MainWindow(QMainWindow):
         self.send_btn.move(right - self.send_btn.width(), INSET)
         self.tools.move(self.send_btn.x() - 12 - self.tools.width(), INSET)
         out_left = left + FORM_W + 28
-        x = out_left + (self.tools.x() - 12 - out_left - self.segments.width()) // 2
-        x = min(x, self.tools.x() - 12 - self.segments.width())  # never under the buttons on the right
-        self.segments.move(max(left + 180, x), INSET)
+        # The output tabs fill the gap between the title and the buttons on the right: centred in it,
+        # roomier when there is space, shortened when there is not, never under either side.
+        title_right = left + max(self.title.sizeHint().width(), self.subtitle.sizeHint().width()) + 24
+        room_right = self.tools.x() - 12
+        self.segments.set_max_width(max(GlassSegmented.MIN_TAB + 8, room_right - title_right))
+        x = title_right + (room_right - title_right - self.segments.width()) // 2
+        self.segments.move(max(title_right, x), INSET)
         self.zoom_bar.move(out_left + (w - 24 - out_left - self.zoom_bar.width()) // 2,
                            h - INSET - 8 - self.zoom_bar.height())
         self._update_zoom_bar()
@@ -595,10 +599,13 @@ class MainWindow(QMainWindow):
             desc.setContentsMargins(6, 0, 6, 0)
             self.form_holder.addWidget(desc)
         box, self.inputs = build_form(self.pack.fields, self.pack.date_format)
-        sheet = Sheet()
-        QVBoxLayout(sheet).addWidget(box)
-        sheet.layout().setContentsMargins(0, 4, 0, 4)
-        self.form_holder.addWidget(sheet)
+        if self.inputs:  # a pack with nothing to ask gets no empty sheet
+            sheet = Sheet()
+            QVBoxLayout(sheet).addWidget(box)
+            sheet.layout().setContentsMargins(0, 4, 0, 4)
+            self.form_holder.addWidget(sheet)
+        else:
+            ink.discard(box)
         self.docx_row.setVisible(any(d.kind == "docx" for d in self.pack.documents))
         self.reload_presets(first=True)
 

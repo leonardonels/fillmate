@@ -22,4 +22,8 @@
 - No system title bar: round corners, and window buttons per platform (macOS traffic lights inside the sidebar,
   a glass minimize/maximize/close capsule on Windows, round glass buttons on Linux following the desktop's
   button layout). Drag empty toolbar space to move, double-click it to maximize, resize from any edge.
+- Buttons are animated: hover light fades in and out, glass buttons brighten and swell when pressed, switch
+  knobs slide, and the selection pill glides between options and fades in on the sidebar.
+- The output tabs stay between the title and the buttons: long document names are shortened (whole name on
+  hover) instead of sliding under the toolbar buttons.
 - Requires PySide6 below 6.12: 6.12 releases Python's None once too often on Python 3.10–3.11 and the app aborts.
