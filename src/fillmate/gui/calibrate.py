@@ -1,69 +1,93 @@
 """Calibration tool: place where each value goes on a PDF by drawing on the page.
 
 Scene coordinates are PDF points (1/72 inch, origin top-left), the same units pack.yaml uses.
+
+No modes: drag over a blank line (or double-click it) to add a box, click a box to select
+and move it, right-click for check marks. Values are picked by field name; the
+{{ template }} behind them only shows up for custom text. Fields made here are written to
+the pack together with the positions, when you save, never before.
 """
 import copy
+import re
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout,
-    QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout,
-    QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QSpinBox, QSplitter,
-    QToolButton, QVBoxLayout, QWidget,
+    QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QGraphicsPixmapItem, QGraphicsRectItem, QGraphicsScene,
+    QGraphicsView, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
+    QVBoxLayout, QWidget,
 )
 
 from .. import FillmateError
-from ..authoring import add_field, render_page, set_document_fill
-from ..pack import FIELD_TYPES, load_pack
+from ..authoring import field_uses, remove_field, render_page, save_positions
+from ..pack import NAME_RE, load_pack
 from ..templating import slug
+from . import frame as frame_mod
+from .frame import Frame, is_passive
+from .ink import (
+    DotGrid, GlassButton, GlassGroup, GlassLayer, GlassMenu, GlassPanel, MarginNote, T, label, set_role,
+)
 
 DPI = 144
-TEXT_COLOR = QColor(47, 85, 212)
-MARK_COLOR = QColor(34, 181, 115)
-MODES = (("select", "Select / move", "Click an area to select it, drag to move it. Arrow keys nudge it "
-          "(Shift = bigger steps), Delete removes it."),
-         ("text", "New text", "Drag a box over the blank line where a value goes."),
-         ("line", "Add line", "Drag a box for the next line of the selected text: long values continue on it."),
-         ("mark", "Check mark", "Click the middle of a box that should get an X."))
+QUICK_WIDTH = 180  # points: the box a double-click makes
+HINTS = ("Drag over a blank line to add a box, or double-click it.",
+         "Drag a box to move it: arrow keys nudge it, Delete removes it.",
+         "Right-click for check marks. Ctrl + wheel zooms.")
+INSET, PANEL_W = 12, 340
+TYPES = (("Text", "text"), ("Long text", "multiline"), ("Date", "date"), ("Several days", "dates"),
+         ("Time", "time"))
+CUSTOM = "__custom__"
+PAGE_INK = "#1b2a6b"  # the page stays white in dark mode too, so boxes keep the light ink
+
+
+def template_for(f):
+    """The value template that puts field `f` on the page."""
+    if f["type"] == "dates":
+        return f"{{{{ {f['id']} | dates }}}}"
+    if f["type"] == "date":
+        return f"{{{{ {f['id']} | date }}}}"
+    return f"{{{{ {f['id']} }}}}"
 
 
 class AreaItem(QGraphicsRectItem):
-    """One text line or check mark on the page, linked to its entry."""
+    """One text line or check mark on the page, linked to its entry. Drawn in ink: you placed it."""
 
-    def __init__(self, rect, entry_index, line_index, color):
+    def __init__(self, rect, entry_index, line_index):
         super().__init__(rect)
         self.entry_index, self.line_index = entry_index, line_index
         self.setFlags(QGraphicsRectItem.ItemIsSelectable | QGraphicsRectItem.ItemIsMovable)
-        self.setPen(QPen(color, 0.8))
-        fill = QColor(color)
-        fill.setAlpha(45)
-        self.setBrush(QBrush(fill))
 
     def paint(self, painter, option, widget=None):
-        painter.setPen(QPen(QColor(230, 80, 40), 1.6) if self.isSelected() else self.pen())
-        painter.setBrush(self.brush())
-        painter.drawRect(self.rect())
+        ink = QColor(PAGE_INK)
+        fill = QColor(ink)
+        if self.isSelected():
+            fill.setAlpha(26)
+            pen = QPen(ink, 1.8)
+        else:
+            fill.setAlpha(12)
+            ink.setAlpha(170)
+            pen = QPen(ink, 1.2, Qt.DashLine)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(QBrush(fill))
+        painter.drawRoundedRect(self.rect(), 1.5, 1.5)
 
 
 class PageView(QGraphicsView):
-    drawn = Signal(QRectF)
-    clicked = Signal(QPointF)
+    drawn = Signal(QRectF)          # a new text box
+    menu = Signal(QPointF, object)  # right-click: scene point, AreaItem or None
     moved = Signal()
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.setScene(QGraphicsScene(self))
         self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
-        self.setBackgroundBrush(QColor(120, 120, 120))
-        self.mode = "select"
+        self.setFrameShape(QGraphicsView.NoFrame)
+        self.setStyleSheet("background: transparent;")
+        self.viewport().setAutoFillBackground(False)
+        self.setBackgroundBrush(Qt.NoBrush)
         self.origin, self.rubber = None, None
         self.background = None
-
-    def set_mode(self, mode):
-        self.mode = mode
-        self.setDragMode(QGraphicsView.NoDrag)
-        self.viewport().setCursor(Qt.ArrowCursor if mode == "select" else Qt.CrossCursor)
 
     def set_page(self, png):
         pm = QPixmap()
@@ -80,8 +104,11 @@ class PageView(QGraphicsView):
         rect = self.scene().sceneRect()
         if rect.width():
             self.resetTransform()
-            scale = (self.viewport().width() - 20) / rect.width()
+            scale = (self.viewport().width() - 40) / rect.width()
             self.scale(scale, scale)
+
+    def zoom(self, factor):
+        self.scale(factor, factor)
 
     def wheelEvent(self, event):
         if event.modifiers() & Qt.ControlModifier:
@@ -90,14 +117,18 @@ class PageView(QGraphicsView):
         else:
             super().wheelEvent(event)
 
+    def _area_at(self, pos):
+        item = self.itemAt(pos)
+        return item if isinstance(item, AreaItem) else None
+
     def mousePressEvent(self, event):
-        if self.mode in ("text", "line") and event.button() == Qt.LeftButton:
-            self.origin = self.mapToScene(event.position().toPoint())
-            self.rubber = self.scene().addRect(QRectF(self.origin, self.origin), QPen(QColor(230, 80, 40), 0.8,
-                                                                                      Qt.DashLine))
-            return
-        if self.mode == "mark" and event.button() == Qt.LeftButton:
-            self.clicked.emit(self.mapToScene(event.position().toPoint()))
+        pos = event.position().toPoint()
+        if event.button() == Qt.LeftButton and self._area_at(pos) is None:
+            self.scene().clearSelection()
+            self.origin = self.mapToScene(pos)
+            pen = QPen(QColor(PAGE_INK), 1.2, Qt.DashLine)
+            pen.setCosmetic(True)
+            self.rubber = self.scene().addRect(QRectF(self.origin, self.origin), pen)
             return
         super().mousePressEvent(event)
 
@@ -119,31 +150,88 @@ class PageView(QGraphicsView):
         if any(item.pos() != QPointF(0, 0) for item in self.scene().selectedItems()):
             self.moved.emit()
 
+    def mouseDoubleClickEvent(self, event):
+        pos = event.position().toPoint()
+        if event.button() == Qt.LeftButton and self._area_at(pos) is None:
+            p = self.mapToScene(pos)
+            right = min(p.x() + QUICK_WIDTH, self.scene().sceneRect().right() - 20)
+            self.drawn.emit(QRectF(QPointF(p.x(), p.y() - 9), QPointF(right, p.y() + 3)))
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def contextMenuEvent(self, event):
+        self.menu.emit(self.mapToScene(event.pos()), self._area_at(event.pos()))
+
 
 class NewFieldDialog(QDialog):
-    def __init__(self, parent):
+    """A new question for the form: its name, and how it is asked. A small sheet of the same paper."""
+
+    def __init__(self, parent, yes_no=False):
         super().__init__(parent)
         self.setWindowTitle("New field")
-        form = QFormLayout(self)
+        self.frame = Frame(self, lambda w, pos: is_passive(w), dialog=True)
+        if frame_mod.PLATFORM == "linux":
+            self.setStyleSheet("QDialog { background: transparent; }")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.paper = DotGrid()
+        self.paper.radius = self.frame.radius
+        outer.addWidget(self.paper)
+        lay = QVBoxLayout(self.paper)
+        lay.setContentsMargins(24, 20, 24, 18)
+        lay.setSpacing(14)
+        lay.addWidget(set_role(QLabel("New yes/no field" if yes_no else "New field"), "h1"))
+        form = QFormLayout()
+        form.setVerticalSpacing(12)
         self.label = QLineEdit()
-        self.label.setPlaceholderText("e.g. Destination")
-        self.ident = QLineEdit()
-        self.ident.setPlaceholderText("used in templates, e.g. destination")
-        self.label.textChanged.connect(lambda t: self.ident.setText(slug(t, 40).lower()))
+        self.label.setPlaceholderText("e.g. Overnight stay" if yes_no else "e.g. Destination")
+        form.addRow(label("What is asked", "lbl"), self.label)
         self.type = QComboBox()
-        self.type.addItems(sorted(FIELD_TYPES))
-        self.type.setCurrentText("text")
+        if yes_no:
+            self.type.addItem("Yes / no", "bool")
+            self.type.setEnabled(False)
+        else:
+            for text, value in TYPES:
+                self.type.addItem(text, value)
+        form.addRow(label("Kind of answer", "lbl"), self.type)
         self.section = QComboBox()
-        self.section.addItem("Asked every time", "fields")
-        self.section.addItem("Profile (entered once)", "profile")
-        form.addRow("Label", self.label)
-        form.addRow("Id", self.ident)
-        form.addRow("Type", self.type)
-        form.addRow("Kind", self.section)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
+        self.section.addItem("Every time the form is filled", "fields")
+        self.section.addItem("Once, in your profile (e.g. your name)", "profile")
+        form.addRow(label("Asked", "lbl"), self.section)
+        lay.addLayout(form)
+        self.problem = MarginNote(arrow=False, px=19)
+        self.problem.hide()
+        lay.addWidget(self.problem)
+        row = QHBoxLayout()
+        row.addStretch()
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        ok = set_role(QPushButton("Add field"), "ink")
+        ok.setDefault(True)
+        ok.clicked.connect(self.accept)
+        for b in (cancel, ok):
+            b.setMinimumHeight(36)
+            row.addWidget(b)
+        lay.addLayout(row)
+        self.edge = self.frame.overlay(self)
+        self.resize(460, 280)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.edge.setGeometry(self.rect())
+        self.edge.raise_()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.frame.after_show()
+
+    def accept(self):
+        if not self.label.text().strip():
+            self.problem.setText("Say what is asked, e.g. “Destination”.")
+            self.problem.show()
+            self.label.setFocus()
+            return
+        super().accept()
 
 
 class CalibrateDialog(QDialog):
@@ -152,156 +240,268 @@ class CalibrateDialog(QDialog):
         self.pack = pack
         self.doc = next(d for d in pack.documents if d.id == doc_id)
         self.entries = copy.deepcopy(self.doc.fill)
+        self.new_fields = []  # made here; saved with the positions
         self.page_no, self.page_count = 0, 1
         self.current = None  # index of the selected entry
         self.setWindowTitle(f"Positions – {self.doc.label}")
         self.resize(1400, 900)
+        self.setMinimumSize(1000, 640)
 
-        self.view = PageView()
+        # Dot-grid paper with the page on it; glass toolbar and a glass panel with the values.
+        self.paper = DotGrid(self)
+        self.glass = GlassLayer(self.paper)
+        self.frame = Frame(self, lambda w, pos: pos.y() < INSET + 52 and is_passive(w), dialog=True)
+        if frame_mod.PLATFORM == "linux":
+            self.setStyleSheet("QDialog { background: transparent; }")
+        self.paper.radius = self.frame.radius
+
+        self.view = PageView(self.paper)
         self.view.drawn.connect(self.on_drawn)
-        self.view.clicked.connect(self.on_clicked)
+        self.view.menu.connect(self.on_menu)
         self.view.moved.connect(self.on_moved)
         self.view.scene().selectionChanged.connect(self.on_scene_selection)
+        for bar in (self.view.verticalScrollBar(), self.view.horizontalScrollBar()):
+            bar.valueChanged.connect(self.glass.schedule)
 
-        left = QWidget()
-        lv = QVBoxLayout(left)
-        bar = QHBoxLayout()
-        self.mode_group = QButtonGroup(self)
-        for i, (key, text, _) in enumerate(MODES):
-            b = QToolButton(text=text, checkable=True)
-            b.setStyleSheet("QToolButton:checked { background: palette(highlight); color: palette(highlighted-text); "
-                            "border-radius: 3px; }")
-            b.setProperty("mode", key)
-            self.mode_group.addButton(b, i)
-            bar.addWidget(b)
-        self.mode_group.idToggled.connect(lambda i, on: on and self.set_mode(MODES[i][0]))
-        bar.addStretch()
-        self.page_spin = QSpinBox()
-        self.page_spin.setPrefix("Page ")
-        self.page_spin.valueChanged.connect(self.set_page)
-        bar.addWidget(self.page_spin)
-        fit = QToolButton(text="Fit width")
-        fit.clicked.connect(self.view.fit_width)
-        bar.addWidget(fit)
-        self.sample = QCheckBox("Show sample text")
-        self.sample.setChecked(True)
-        self.sample.toggled.connect(self.schedule_render)
-        bar.addWidget(self.sample)
-        lv.addLayout(bar)
-        self.hint = QLabel()
-        self.hint.setWordWrap(True)
-        lv.addWidget(self.hint)
-        lv.addWidget(self.view, 1)
+        self.title_box = QWidget(self.paper)
+        tv = QVBoxLayout(self.title_box)
+        tv.setContentsMargins(0, 0, 0, 0)
+        tv.setSpacing(0)
+        tv.addWidget(set_role(label("Positions"), "h1"))
+        self.subtitle = label("", "muted")
+        tv.addWidget(self.subtitle)
 
-        right = QWidget()
-        rv = QVBoxLayout(right)
-        rv.addWidget(QLabel("Values on this document"))
+        self.pages = self.glass.add(GlassGroup(self))
+        self.prev_btn = self.pages.add("back", "Previous page", lambda: self.go_page(self.page_no - 1))
+        self.next_btn = self.pages.add("forward", "Next page", lambda: self.go_page(self.page_no + 1))
+        self.zoom_bar = self.glass.add(GlassGroup(self))
+        self.zoom_bar.add("minus", "Zoom out (Ctrl + wheel)", lambda: self.view.zoom(1 / 1.15))
+        self.zoom_bar.add("fit", "Fit the width", self.view.fit_width)
+        self.zoom_bar.add("plus", "Zoom in (Ctrl + wheel)", lambda: self.view.zoom(1.15))
+        self.cancel_btn = self.glass.add(GlassButton("Cancel", None, self))
+        self.cancel_btn.clicked.connect(self.reject)
+        self.save_btn = self.glass.add(GlassButton("Save", None, self, tint=T["ink"]))
+        self.save_btn.clicked.connect(self.save)
+
+        self.panel = self.glass.add(GlassPanel(self, radius=24, bezel=30, blur=0.5, regular=True))
+        pv = QVBoxLayout(self.panel)
+        pv.setContentsMargins(12, 16, 12, 12)
+        pv.setSpacing(10)
+        self.win_left = self.frame.make_buttons(self, "left")
+        self.win_right = self.frame.make_buttons(self, "right")
+        head = QHBoxLayout()
+        head.setContentsMargins(6, 0, 0, 0)
+        head.addWidget(set_role(label("Values on this document"), "h1"), 1)
+        if self.win_right is not None:
+            head.addSpacing(self.win_right.width() + 4)  # the window buttons sit in this corner
+        pv.addLayout(head)
         self.list = QListWidget()
         self.list.currentRowChanged.connect(self.select_entry)
-        rv.addWidget(self.list, 1)
-        self.editor = QGroupBox("Selected value")
-        ef = QFormLayout(self.editor)
+        pv.addWidget(self.list, 1)
+
+        self.hints = QWidget()  # fillmate's notes, while nothing is selected
+        hv = QVBoxLayout(self.hints)
+        hv.setContentsMargins(6, 4, 4, 4)
+        hv.setSpacing(8)
+        for text in HINTS:
+            hv.addWidget(MarginNote(text, arrow=False, px=19))
+        pv.addWidget(self.hints)
+
+        self.editor = QWidget()
+        ef = QVBoxLayout(self.editor)
+        ef.setContentsMargins(6, 4, 4, 0)
+        ef.setSpacing(6)
+        ef.addWidget(set_role(label("Selected value"), "sec"))
+        self.value_label = label("What goes here", "lbl")
+        ef.addWidget(self.value_label)
         self.value = QComboBox()
-        self.value.setEditable(True)
-        self.value.setInsertPolicy(QComboBox.NoInsert)
-        self.value.lineEdit().setPlaceholderText("{{ field_id }} or fixed text")
-        self.value.editTextChanged.connect(self.on_value_edited)
-        value_row = QHBoxLayout()
-        value_row.addWidget(self.value, 1)
-        new_field = QPushButton("New field…")
-        new_field.clicked.connect(self.new_field)
-        value_row.addWidget(new_field)
-        self.value_label = QLabel("Value")
-        ef.addRow(self.value_label, value_row)
+        self.value.activated.connect(self.on_value_picked)
+        ef.addWidget(self.value)
+        self.custom_label = label("Custom text", "lbl")
+        ef.addWidget(self.custom_label)
+        self.custom = QLineEdit()
+        self.custom.setPlaceholderText("Text, with {{ field }} where a value goes")
+        self.custom.textEdited.connect(self.on_custom_edited)
+        ef.addWidget(self.custom)
+        size_row = QHBoxLayout()
+        self.size_label = label("Text size", "lbl")
+        size_row.addWidget(self.size_label, 1)
         self.size = QDoubleSpinBox()
         self.size.setRange(4, 36)
         self.size.setSingleStep(0.5)
+        self.size.setDecimals(1)
+        self.size.setSuffix(" pt")
+        self.size.setFixedWidth(90)
         self.size.valueChanged.connect(self.on_size)
-        ef.addRow("Font size", self.size)
-        self.symbol = QLineEdit()
-        self.symbol.setMaxLength(3)
-        self.symbol.textEdited.connect(self.on_symbol)
-        self.symbol_label = QLabel("Symbol")
-        ef.addRow(self.symbol_label, self.symbol)
-        self.coords = QLabel()
-        self.coords.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        ef.addRow("Position", self.coords)
-        delete = QPushButton("Delete value")
+        size_row.addWidget(self.size)
+        ef.addLayout(size_row)
+        delete = set_role(QPushButton("Delete from the page"), "danger")
         delete.clicked.connect(self.delete_entry)
-        ef.addRow(delete)
-        rv.addWidget(self.editor)
-        help_text = QLabel("Text values use {{ field_id }}; check marks use a condition such as "
-                           "<code>transport == 'Train'</code> or just <code>overnight</code>. "
-                           "Ctrl + mouse wheel zooms.")
-        help_text.setWordWrap(True)
-        rv.addWidget(help_text)
+        ef.addWidget(delete)
+        pv.addWidget(self.editor)
+        tidy = QPushButton("Remove unused fields…")
+        tidy.setFlat(True)
+        tidy.setStyleSheet(f"QPushButton {{ border: 0; background: transparent; color: {T['label2']}; "
+                           "text-decoration: underline; padding: 4px 6px; }")
+        tidy.setToolTip("Delete fields of this pack that nothing uses")
+        tidy.clicked.connect(self.remove_unused_fields)
+        pv.addWidget(tidy, 0, Qt.AlignLeft)
 
-        split = QSplitter()
-        split.addWidget(left)
-        split.addWidget(right)
-        split.setSizes([1000, 400])
-        lay = QVBoxLayout(self)
-        lay.addWidget(split, 1)
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.save)
-        buttons.rejected.connect(self.reject)
-        lay.addWidget(buttons)
+        self.frame.adopt(self.glass, self.win_left, self.win_right)
+        self.context = self.glass.add(GlassMenu(self, width=340))  # right-click menu, glass like the others
+        self.edge = self.frame.overlay(self)
 
         for key in (QKeySequence.Delete, QKeySequence.Backspace):
             QShortcut(key, self.view, activated=self.delete_selected_area)
-        self.render_timer = QTimer(self, singleShot=True, interval=200)
-        self.render_timer.timeout.connect(self.render)
 
-        self.refresh_suggestions()
-        self.mode_group.button(1 if not self.entries else 0).setChecked(True)
         self.render()
-        self.page_spin.setRange(1, self.page_count)
         self.refresh_list()
         QTimer.singleShot(0, self.view.fit_width)
 
-    # --- helpers ---
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        w, h = self.width(), self.height()
+        self.paper.setGeometry(self.rect())
+        self.panel.setGeometry(w - INSET - PANEL_W, INSET, PANEL_W, h - 2 * INSET)
+        left = INSET + 6
+        if self.win_left is not None:
+            self.win_left.move(INSET + 4, INSET + 6)
+            left = self.win_left.x() + self.win_left.width() + 12
+        if self.win_right is not None:
+            self.win_right.move(w - INSET - 12 - self.win_right.width(), INSET + 10)
+        right = self.panel.x() - 12
+        self.save_btn.move(right - self.save_btn.width(), INSET)
+        self.cancel_btn.move(self.save_btn.x() - 10 - self.cancel_btn.width(), INSET)
+        self.title_box.setGeometry(left, INSET, 320, 44)
+        mid = (left + 320 + self.cancel_btn.x()) // 2
+        groups = [g for g in (self.pages, self.zoom_bar) if not g.isHidden()]
+        total = sum(g.width() for g in groups) + 10 * (len(groups) - 1)
+        x = mid - total // 2
+        for g in groups:
+            g.move(x, INSET)
+            x += g.width() + 10
+        self.view.setGeometry(0, INSET + 52, self.panel.x() - 4, h - INSET - 52)
+        for wdg in (self.panel, self.pages, self.zoom_bar, self.cancel_btn, self.save_btn, self.win_left,
+                    self.win_right):
+            if wdg is not None:
+                wdg.raise_()
+        self.edge.setGeometry(self.rect())
+        self.edge.raise_()
+        self.glass.schedule()
 
-    def labels(self):
-        out = {f.id: f.label for f in self.pack.profile + self.pack.fields}
-        out.update({k: k for k in self.pack.computed})
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.frame.after_show()
+
+    # --- fields ---
+
+    def fields(self):
+        """Every field the pack has, plus the ones made here: {id, label, type, options}."""
+        out = [{"id": f.id, "label": f.label, "type": f.type, "options": list(f.options)}
+               for f in self.pack.profile + self.pack.fields]
+        return out + [nf for nf in self.new_fields if nf["id"] not in {f["id"] for f in out}]
+
+    def text_choices(self):
+        return [(f["label"], template_for(f)) for f in self.fields() if f["type"] != "bool"] + \
+               [(k.replace("_", " ").capitalize(), f"{{{{ {k} }}}}") for k in self.pack.computed]
+
+    def mark_choices(self):
+        out = []
+        for f in self.fields():
+            if f["type"] == "bool":
+                out.append((f"{f['label']} is yes", f["id"]))
+            elif f["type"] == "choice":
+                for o in f["options"]:
+                    out.append((f"{f['label']} is {o}", f"{f['id']} == '{o}'"))
         return out
 
-    def refresh_suggestions(self):
-        text = self.value.currentText()
-        self.value.blockSignals(True)
-        self.value.clear()
+    def describe(self, e):
+        if "field" in e:
+            return f"Form field “{e['field']}”: {self.name_of(e['value'], self.text_choices())}"
+        if "mark" in e:
+            return f"✓  when {self.name_of(e['mark'], self.mark_choices()) or '…'}"
+        n = len(e["lines"])
+        name = self.name_of(e["value"], self.text_choices()) or "(choose what goes here)"
+        return f"{name}" + (f"   · {n} lines" if n > 1 else "")
+
+    @staticmethod
+    def name_of(value, choices):
+        return next((text for text, v in choices if v == value), value)
+
+    def new_field_id(self, text):
+        used = {f["id"] for f in self.fields()} | set(self.pack.computed)
+        base = re.sub(r"\W+", "_", slug(text, 40)).strip("_").lower() or "field"
+        if not NAME_RE.match(base):
+            base = "f_" + base
+        fid, n = base, 2
+        while fid in used:
+            fid, n = f"{base}_{n}", n + 1
+        return fid
+
+    def make_field(self, yes_no=False):
+        d = NewFieldDialog(self, yes_no=yes_no)
+        if not d.exec():
+            return None
+        f = {"id": self.new_field_id(d.label.text()), "label": d.label.text().strip(),
+             "type": d.type.currentData(), "section": d.section.currentData(), "options": []}
+        self.new_fields.append(f)
+        return f
+
+    def remove_unused_fields(self):
+        used_here = " ".join(str(e.get("value", e.get("mark", ""))) for e in self.entries)
+        unused = []
         for f in self.pack.profile + self.pack.fields:
-            if f.type == "dates":
-                self.value.addItem(f"{{{{ {f.id} | dates }}}}")
-            elif f.type == "date":
-                self.value.addItem(f"{{{{ {f.id} | date }}}}")
-            else:
-                self.value.addItem(f"{{{{ {f.id} }}}}")
-        for k in self.pack.computed:
-            self.value.addItem(f"{{{{ {k} }}}}")
-        self.value.setEditText(text)
-        self.value.blockSignals(False)
+            if re.search(rf"\b{re.escape(f.id)}\b", used_here):
+                continue
+            try:
+                if not field_uses(self.pack.root, f.id):
+                    unused.append(f)
+            except FillmateError:
+                pass
+        self.new_fields = [nf for nf in self.new_fields if re.search(rf"\b{nf['id']}\b", used_here)]
+        if not unused:
+            frame_mod.tell(self, "Unused fields", "Every field of this pack is used somewhere.")
+            return
+        names = "\n".join(f"• {f.label}" for f in unused)
+        if frame_mod.ask(self, "Remove unused fields?",
+                                f"These fields are not used on any document, in the email or in a rule:\n\n{names}"
+                                "\n\nRemove them from the pack?") != QMessageBox.Yes:
+            return
+        for f in unused:
+            try:
+                self.pack = remove_field(self.pack.root, f.id)
+            except FillmateError as e:
+                frame_mod.tell(self, "Remove field", str(e))
+        self.refresh_list()
 
-    def set_mode(self, mode):
-        self.view.set_mode(mode)
-        self.hint.setText(next(h for k, _, h in MODES if k == mode))
+    # --- page ---
 
-    def set_page(self, value):
-        self.page_no = max(0, value - 1)
-        self.render()
+    def go_page(self, index):
+        index = max(0, min(index, self.page_count - 1))
+        if index != self.page_no:
+            self.page_no = index
+            self.render()
 
-    def schedule_render(self):
-        self.render_timer.start()
+    def show_pages(self):
+        where = self.doc.label
+        self.subtitle.setToolTip(f"{self.doc.label} · {self.pack.name}")
+        if self.page_count > 1:
+            where = f"Page {self.page_no + 1} of {self.page_count} · " + where
+        self.subtitle.setText(where)
+        self.pages.setVisible(self.page_count > 1)
+        self.prev_btn.setEnabled(self.page_no > 0)
+        self.next_btn.setEnabled(self.page_no < self.page_count - 1)
 
     def render(self):
         try:
-            png, self.page_count = render_page(self.doc.template, self.page_no, DPI,
-                                               self.entries if self.sample.isChecked() else (), self.labels())
+            png, self.page_count = render_page(self.doc.template, self.page_no, DPI)  # the bare page
         except Exception as e:
-            QMessageBox.warning(self, "Cannot show the page", str(e))
+            frame_mod.tell(self, "Cannot show the page", str(e))
             return
         self.view.set_page(png)
         self.draw_areas()
+        self.show_pages()
+        self.glass.schedule()
 
     def draw_areas(self):
         scene = self.view.scene()
@@ -314,24 +514,18 @@ class CalibrateDialog(QDialog):
             if "mark" in e:
                 s = e.get("size", 11)
                 x, y = e["at"]
-                item = AreaItem(QRectF(x - 1, y - s * 0.75, s * 0.75, s * 0.85), i, None, MARK_COLOR)
+                item = AreaItem(QRectF(x - 1, y - s * 0.75, s * 0.75, s * 0.85), i, None)
                 scene.addItem(item)
                 item.setSelected(i == self.current)
             else:
                 s = e.get("size", 10)
                 for j, (x0, y, x1) in enumerate(e["lines"]):
-                    item = AreaItem(QRectF(x0, y - s * 0.8, x1 - x0, s * 1.0), i, j, TEXT_COLOR)
+                    item = AreaItem(QRectF(x0, y - s * 0.8, x1 - x0, s * 1.0), i, j)
                     scene.addItem(item)
                     item.setSelected(i == self.current)
         scene.blockSignals(False)
 
-    def describe(self, e):
-        if "field" in e:
-            return f"Form field “{e['field']}” ← {e['value']}"
-        if "mark" in e:
-            return f"✓ {e['mark'] or '(no condition yet)'}   · page {e.get('page', 0) + 1}"
-        n = len(e["lines"])
-        return f"{e['value'] or '(no value yet)'}   · {n} line{'s' if n > 1 else ''}, page {e.get('page', 0) + 1}"
+    # --- list and editor ---
 
     def refresh_list(self):
         self.list.blockSignals(True)
@@ -344,47 +538,83 @@ class CalibrateDialog(QDialog):
 
     def show_editor(self):
         e = self.entries[self.current] if self.current is not None else None
-        self.editor.setEnabled(e is not None)
+        self.editor.setVisible(e is not None)
+        self.hints.setVisible(e is None)
         if e is None:
-            self.coords.setText("")
             return
         is_mark = "mark" in e
-        self.value_label.setText("Condition" if is_mark else "Value")
+        self.value_label.setText("Ticked when" if is_mark else "What goes here")
+        choices = self.mark_choices() if is_mark else self.text_choices()
+        current = e["mark"] if is_mark else e["value"]
         self.value.blockSignals(True)
-        self.value.setEditText(e["mark"] if is_mark else e["value"])
+        self.value.clear()
+        if not current:
+            self.value.addItem("Choose…", None)
+        for text, v in choices:
+            self.value.addItem(text, v)
+        self.value.addItem("New yes/no question…" if is_mark else "New field…", "__new__")
+        self.value.addItem("Custom condition…" if is_mark else "Custom text…", CUSTOM)
+        known = [v for _t, v in choices]
+        if not current:
+            self.value.setCurrentIndex(0)
+        elif current in known:
+            self.value.setCurrentIndex(self.value.findData(current))
+        else:
+            self.value.setCurrentIndex(self.value.findData(CUSTOM))
         self.value.blockSignals(False)
+        custom = bool(current) and current not in known
+        self.custom.setText(current if custom else "")
+        for w in (self.custom, self.custom_label):
+            w.setVisible(custom)
         self.size.blockSignals(True)
         self.size.setValue(e.get("size", 11 if is_mark else 10))
-        self.size.setEnabled("field" not in e)
         self.size.blockSignals(False)
-        self.symbol.setVisible(is_mark)
-        self.symbol_label.setVisible(is_mark)
-        if is_mark:
-            self.symbol.setText(e.get("symbol", "X"))
-            self.coords.setText(f"at {e['at'][0]:.1f}, {e['at'][1]:.1f}")
-        elif "lines" in e:
-            self.coords.setText("\n".join(f"line {k + 1}: x {a:.1f}–{c:.1f}, baseline {b:.1f}"
-                                          for k, (a, b, c) in enumerate(e["lines"])))
-        else:
-            self.coords.setText("fillable field (no position needed)")
+        for w in (self.size, self.size_label):
+            w.setVisible("field" not in e)
 
-    def changed(self, redraw=True):
+    def set_current_value(self, value):
+        e = self.entries[self.current]
+        e["mark" if "mark" in e else "value"] = value
+        self.changed()
+
+    def on_value_picked(self, index):
+        if self.current is None:
+            return
+        data = self.value.itemData(index)
+        e = self.entries[self.current]
+        if data == "__new__":
+            f = self.make_field(yes_no="mark" in e)
+            if f is None:
+                self.show_editor()
+                return
+            self.set_current_value(f["id"] if "mark" in e else template_for(f))
+        elif data == CUSTOM:
+            for w in (self.custom, self.custom_label):
+                w.show()
+            self.custom.setFocus()
+        elif data:
+            self.set_current_value(data)
+
+    def on_custom_edited(self, text):
         if self.current is not None:
+            e = self.entries[self.current]
+            e["mark" if "mark" in e else "value"] = text
             item = self.list.item(self.current)
             if item:
-                item.setText(self.describe(self.entries[self.current]))
-        self.show_editor()
+                item.setText(self.describe(e))
+
+    def changed(self, redraw=True):
+        self.refresh_list()
         if redraw:
             self.draw_areas()
-        self.schedule_render()
 
-    # --- events ---
+    # --- page events ---
 
     def select_entry(self, row):
         self.current = row if 0 <= row < len(self.entries) else None
         e = self.entries[self.current] if self.current is not None else None
         if e and "field" not in e and e.get("page", 0) != self.page_no:
-            self.page_spin.setValue(e.get("page", 0) + 1)
+            self.go_page(e.get("page", 0))
         self.show_editor()
         self.draw_areas()
 
@@ -397,36 +627,44 @@ class CalibrateDialog(QDialog):
             self.list.blockSignals(False)
             self.show_editor()
 
-    def on_drawn(self, rect):
+    @staticmethod
+    def _line(rect):
         h = rect.height()
         if h < 6:  # a thin stroke along an underline
-            size, baseline = 10.0, rect.bottom()
-        else:
-            size = max(6.0, min(14.0, round(h * 0.75 * 2) / 2))
-            baseline = rect.bottom() - h * 0.2
-        line = [rect.left(), baseline, rect.right()]
-        e = self.entries[self.current] if self.current is not None else None
-        if self.view.mode == "line":
-            if not e or "lines" not in e:
-                QMessageBox.information(self, "Add line", "Select a text value first, then draw its next line.")
-                return
-            e["lines"].append(line)
-        else:
-            self.entries.append({"value": "", "page": self.page_no, "lines": [line], "font": "helv",
-                                 "size": size, "min_size": 7.0})
-            self.current = len(self.entries) - 1
-            self.refresh_list()
-            self.value.setFocus()
-        self.changed()
+            return 10.0, [rect.left(), rect.bottom(), rect.right()]
+        size = max(6.0, min(14.0, round(h * 0.75 * 2) / 2))
+        return size, [rect.left(), rect.bottom() - h * 0.2, rect.right()]
 
-    def on_clicked(self, point):
+    def on_drawn(self, rect):
+        size, line = self._line(rect)
+        self.entries.append({"value": "", "page": self.page_no, "lines": [line], "font": "helv",
+                             "size": size, "min_size": 7.0})
+        self.current = len(self.entries) - 1
+        self.changed()
+        self.value.setFocus()
+        self.value.showPopup()
+
+    def add_mark(self, point):
         size = 11.0
         self.entries.append({"mark": "", "page": self.page_no, "at": [point.x() - size * 0.33, point.y() + size * 0.36],
                              "symbol": "X", "size": size})
         self.current = len(self.entries) - 1
-        self.refresh_list()
-        self.value.setFocus()
         self.changed()
+        self.value.setFocus()
+        self.value.showPopup()
+
+    def on_menu(self, point, item):
+        m = self.context
+        m.clear()
+        if item is not None:
+            self.current = item.entry_index
+            self.refresh_list()
+            m.add("Delete from the page", "trash", self.delete_selected_area, danger=True)
+        else:
+            m.add("Add a text box here", "box", lambda: self.on_drawn(
+                QRectF(QPointF(point.x(), point.y() - 9), QPointF(point.x() + QUICK_WIDTH, point.y() + 3))))
+            m.add("Add a check mark here", "check", lambda: self.add_mark(point))
+        m.popup(self.view.mapToGlobal(self.view.mapFromScene(point)))
 
     def on_moved(self):
         for item in self.view.scene().selectedItems():
@@ -454,29 +692,16 @@ class CalibrateDialog(QDialog):
             return
         super().keyPressEvent(event)
 
-    def on_value_edited(self, text):
-        if self.current is None:
-            return
-        e = self.entries[self.current]
-        e["mark" if "mark" in e else "value"] = text
-        self.changed(redraw=False)
-
     def on_size(self, value):
         if self.current is not None:
             self.entries[self.current]["size"] = value
-            self.changed()
-
-    def on_symbol(self, text):
-        if self.current is not None:
-            self.entries[self.current]["symbol"] = text or "X"
-            self.changed(redraw=False)
+            self.draw_areas()
 
     def delete_entry(self):
         if self.current is None:
             return
         del self.entries[self.current]
         self.current = None
-        self.refresh_list()
         self.changed()
 
     def delete_selected_area(self):
@@ -492,22 +717,6 @@ class CalibrateDialog(QDialog):
             self.current = item.entry_index
             self.delete_entry()
 
-    def new_field(self):
-        d = NewFieldDialog(self)
-        if not d.exec():
-            return
-        try:
-            self.pack = add_field(self.pack.root, d.ident.text().strip(), d.label.text().strip() or d.ident.text(),
-                                  d.type.currentText(), d.section.currentData())
-        except FillmateError as e:
-            QMessageBox.warning(self, "New field", str(e))
-            return
-        fid, ftype = d.ident.text().strip(), d.type.currentText()
-        self.refresh_suggestions()
-        if self.current is not None and "mark" not in self.entries[self.current]:
-            filt = " | dates" if ftype == "dates" else " | date" if ftype == "date" else ""
-            self.value.setEditText(f"{{{{ {fid}{filt} }}}}")
-
     # --- save ---
 
     def save(self):
@@ -515,13 +724,15 @@ class CalibrateDialog(QDialog):
             key = "mark" if "mark" in e else "value"
             if not str(e.get(key, "")).strip():
                 self.list.setCurrentRow(i)
-                QMessageBox.warning(self, "Missing value", "Give every area a value (or a condition for check "
-                                    "marks), or delete it.")
+                frame_mod.tell(self, "Missing value", "Choose what goes in every box (or when every check "
+                                    "mark is ticked), or delete it.")
                 return
+        text = " ".join(str(e.get("value", e.get("mark", ""))) for e in self.entries)
+        used_new = [nf for nf in self.new_fields if re.search(rf"\b{nf['id']}\b", text)]
         try:
-            set_document_fill(self.pack.root, self.doc.id, self.entries)
+            save_positions(self.pack.root, self.doc.id, self.entries, used_new)
         except FillmateError as e:
-            QMessageBox.warning(self, "Cannot save", str(e))
+            frame_mod.tell(self, "Cannot save", str(e))
             return
         self.pack = load_pack(self.pack.root)
         self.accept()

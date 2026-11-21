@@ -4,27 +4,35 @@ import shutil
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, Qt, QUrl
-from PySide6.QtGui import QDesktopServices, QIcon
+from PySide6.QtCore import QEventLoop, QProcess, Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFormLayout, QFrame, QHBoxLayout, QInputDialog, QLabel,
-    QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSplitter,
-    QTabWidget, QVBoxLayout, QWidget,
+    QApplication, QButtonGroup, QComboBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from .. import FillmateError, engine, mail, store
+from ..authoring import sync_docx_fields
 from ..fill_docx import docx_to_pdf, find_libreoffice
 from ..fill_pdf import render_pages
 from ..mail.gmail import GoogleAuth
 from ..mail.mailapp import open_draft
 from ..mail.senders import make_sender
-from ..pack import list_packs
+from ..pack import list_packs, remove_pack
 from ..paths import cache_dir
-from .common import GNOME_SCHEME, Bridge, Preview, apply_theme, banner_style, gnome_available
+from . import ink
+from .common import GNOME_SCHEME, Bridge, Preview, apply_theme, gnome_available
+from . import frame
 from .fields import build_form
+from .frame import Frame, is_passive
+from .ink import (
+    DotGrid, GlassButton, GlassGroup, GlassMenu, GlassLayer, GlassPanel, GlassSegmented, GlassSwitch, MarginNote, Sheet,
+    PackRow, SideButton, T, highlight, label, set_role,
+)
 
 APP_ID = "io.github.leonardonels.fillmate"  # matches the installed .desktop file
 PLACEHOLDER = "Fill in the form and press “Create documents” to see a preview."
+SIDEBAR_W, INSET, FORM_W = 272, 12, 392
 
 
 def icon():
@@ -32,11 +40,118 @@ def icon():
     return QIcon(str(path)) if path.is_file() else QIcon.fromTheme("mail-send")
 
 
+def scroll(widget, top=0):
+    area = QScrollArea()
+    area.setWidgetResizable(True)
+    area.setFrameShape(QScrollArea.NoFrame)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    area.setWidget(widget)
+    area.viewport().setAutoFillBackground(False)
+    widget.setAutoFillBackground(False)
+    return area
+
+
+class OutputStack(QStackedWidget):
+    """The previews, one per document, followed by the email. Offers the bits of
+    QTabWidget's API the window used before (clear, addTab, widget)."""
+
+    labels_changed = Signal(list)
+
+    def __init__(self, email_page):
+        super().__init__()
+        self.email_page = email_page
+        self.addWidget(email_page)
+        self.doc_labels = []
+
+    def clear(self):
+        while self.count() > 1:
+            w = self.widget(0)
+            self.removeWidget(w)
+            ink.discard(w)
+        self.doc_labels = []
+        self.labels_changed.emit(self.labels())
+
+    def addTab(self, widget, text):
+        self.insertWidget(len(self.doc_labels), widget)
+        self.doc_labels.append(text)
+        self.labels_changed.emit(self.labels())
+
+    def labels(self):
+        return [*self.doc_labels, "Email"]
+
+
+class SendCheck(GlassPanel):
+    """The last check before sending, opened from the Send button."""
+
+    def __init__(self, parent):
+        super().__init__(parent, radius=28, bezel=30, blur=6, regular=True)
+        self.setFixedWidth(360)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 18, 20, 16)
+        lay.setSpacing(10)
+        lay.addWidget(set_role(label("Send this email?"), "h1"))
+        self.rows = QLabel()
+        self.rows.setTextFormat(Qt.RichText)
+        self.rows.setWordWrap(True)
+        lay.addWidget(self.rows)
+        self.note = MarginNote(px=20)
+        lay.addWidget(self.note)
+        lay.addStretch()
+        buttons = QHBoxLayout()
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(lambda: self._done(False))
+        self.ok = set_role(QPushButton("Send"), "primary")  # ink label, like Create documents
+        self.ok.clicked.connect(lambda: self._done(True))
+        for b in (cancel, self.ok):
+            b.setMinimumHeight(40)
+            b.setStyleSheet("border-radius: 20px; font-size: 14px; padding: 8px 16px;")
+            buttons.addWidget(b)
+        lay.addLayout(buttons)
+        self.loop, self.result = None, False
+        self.catcher = QWidget(parent)  # blocks the window behind while the check is open
+        self.catcher.hide()
+        self.catcher.mousePressEvent = lambda _e: self._done(False)
+        QShortcut(QKeySequence(Qt.Key_Escape), self, activated=lambda: self._done(False))
+
+    def ask(self, anchor, rows_html, note, ok_text):
+        self.rows.setText(rows_html)
+        self.note.setText(note)
+        self.note.setVisible(bool(note))
+        self.ok.setText(ok_text)
+        # Height from the wrapped text at this width, so long subjects never push rows under the note.
+        lay = self.layout()
+        lay.activate()
+        height = lay.totalHeightForWidth(self.width()) if lay.hasHeightForWidth() else lay.totalSizeHint().height()
+        self.setFixedHeight(max(height, lay.totalMinimumSize().height()))
+        parent = self.parentWidget()
+        self.catcher.setGeometry(parent.rect())
+        self.catcher.show()
+        self.catcher.raise_()
+        x = min(anchor.right() - self.width(), parent.width() - self.width() - INSET)
+        self.move(max(INSET, x), anchor.bottom() + 10)
+        self.show()
+        self.raise_()
+        self.ok.setFocus()
+        if self.layer:
+            self.layer.refresh()
+        self.loop = QEventLoop()
+        self.loop.exec()
+        return self.result
+
+    def _done(self, ok):
+        self.result = ok
+        self.hide()
+        self.catcher.hide()
+        if self.loop:
+            self.loop.quit()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("fillmate")
-        self.resize(1400, 900)
+        self.resize(1440, 900)
+        self.setMinimumSize(1100, 680)
         self.bridge = Bridge()
         self.auth = GoogleAuth()
         self.settings = store.load_settings()
@@ -44,27 +159,35 @@ class MainWindow(QMainWindow):
         self.inputs = {}
         self.outputs, self.attachments, self.out = None, [], None
         self.dark = False
+        self.sent_at = None
 
-        root = QWidget()
-        outer = QVBoxLayout(root)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        outer.addWidget(self._header())
-        self.test_banner = QLabel()
-        self.test_banner.setWordWrap(True)
-        outer.addWidget(self.test_banner)
+        # The pack and preset lists live in the sidebar; these combos are their models.
+        self.pack_combo = QComboBox(self)
+        self.pack_combo.hide()
+        self.pack_combo.currentIndexChanged.connect(self.pack_changed)
+        self.preset_combo = QComboBox(self)
+        self.preset_combo.hide()
+        self.preset_combo.currentIndexChanged.connect(self.apply_preset)
 
-        self.split = QSplitter(Qt.Horizontal)
-        self.split.addWidget(self._left())
-        right = QSplitter(Qt.Vertical)
-        self.tabs = QTabWidget()
-        right.addWidget(self.tabs)
-        right.addWidget(self._mail())
-        right.setSizes([520, 380])
-        self.split.addWidget(right)
-        self.split.setSizes([440, 960])
-        outer.addWidget(self.split, 1)
-        self.setCentralWidget(root)
+        self.canvas = QWidget()
+        self.canvas.resizeEvent = lambda e: self._place()
+        self.setCentralWidget(self.canvas)
+        self.content = DotGrid(self.canvas)  # everything under the glass
+        self.glass = GlassLayer(self.content)
+        self.frame = Frame(self, self._drag_zone)
+        if frame.PLATFORM == "linux":
+            self.setStyleSheet("QMainWindow { background: transparent; }")
+        self.content.radius = self.frame.radius
+        self._content()
+        self._toolbar()
+        self._sidebar()
+        self.win_left = self.frame.make_buttons(self.canvas, "left")
+        self.win_right = self.frame.make_buttons(self.canvas, "right")
+        self.frame.adopt(self.glass, self.win_left, self.win_right)
+        self.edge = self.frame.overlay(self.canvas)
+        self.check = self.glass.add(SendCheck(self.canvas))
+        self.check.hide()
+        self.pack_menu = self.glass.add(GlassMenu(self.canvas, width=300))
 
         QApplication.instance().styleHints().colorSchemeChanged.connect(lambda _: self.apply_theme())
         self.scheme_monitor = None
@@ -76,110 +199,264 @@ class MainWindow(QMainWindow):
 
     # --- layout ---
 
-    def _header(self):
-        bar = QFrame()
-        bar.setFrameShape(QFrame.StyledPanel)
-        lay = QHBoxLayout(bar)
-        title = QLabel("fillmate")
-        title.setStyleSheet("font-size:16px; font-weight:600;")
-        lay.addWidget(title)
-        lay.addSpacing(16)
-        self.pack_combo = QComboBox()
-        self.pack_combo.setMinimumWidth(320)
-        self.pack_combo.currentIndexChanged.connect(self.pack_changed)
-        lay.addWidget(self.pack_combo)
-        lay.addStretch()
-        self.account_label = QLabel()
-        lay.addWidget(self.account_label)
-        self.login_btn = QPushButton()
-        self.login_btn.clicked.connect(self.toggle_login)
-        lay.addWidget(self.login_btn)
-        settings = QPushButton("Settings")
-        settings.clicked.connect(lambda: self.open_settings())
-        lay.addWidget(settings)
-        return bar
+    def _content(self):
+        row = QHBoxLayout(self.content)
+        row.setContentsMargins(SIDEBAR_W + 2 * INSET + 8, 0, 24, 0)
+        row.setSpacing(28)
 
-    def _left(self):
-        self.left = QWidget()
-        v = QVBoxLayout(self.left)
-        presets = QHBoxLayout()
-        presets.addWidget(QLabel("Preset"))
-        self.preset_combo = QComboBox()
-        self.preset_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
-        self.preset_combo.currentIndexChanged.connect(self.apply_preset)
-        presets.addWidget(self.preset_combo, 1)
-        self.save_preset_btn = QPushButton("Save…")
-        self.save_preset_btn.setToolTip("Save the current values as a preset")
-        self.save_preset_btn.clicked.connect(self.save_preset)
-        presets.addWidget(self.save_preset_btn)
-        self.delete_preset_btn = QPushButton("Delete")
-        self.delete_preset_btn.clicked.connect(self.delete_preset)
-        presets.addWidget(self.delete_preset_btn)
-        v.addLayout(presets)
+        form = QWidget()
+        v = QVBoxLayout(form)
+        v.setContentsMargins(0, 76, 4, 24)
+        v.setSpacing(14)
+        self.warning = MarginNote(arrow=False)  # rule warnings, in fillmate's red pen
+        self.warning.hide()
+        v.addWidget(self.warning)
         self.form_holder = QVBoxLayout()
+        self.form_holder.setSpacing(12)
         v.addLayout(self.form_holder)
-        self.docx_pdf = QCheckBox("Also attach DOCX documents as PDF")
-        self.docx_pdf.setChecked(bool(self.settings.get("attach_docx_as_pdf")))
+        self.docx_row = QWidget()
+        h = QHBoxLayout(self.docx_row)
+        h.setContentsMargins(6, 4, 6, 0)
+        text = QVBoxLayout()
+        text.setSpacing(1)
+        text.addWidget(label("Also attach Word files as PDF"))
+        text.addWidget(label("Needs LibreOffice", "lbl"))
+        h.addLayout(text, 1)
+        self.docx_pdf = GlassSwitch(checked=bool(self.settings.get("attach_docx_as_pdf")))
+        self.docx_pdf.setAccessibleName("Also attach Word files as PDF")
         self.docx_pdf.toggled.connect(self._remember_docx_pdf)
-        v.addWidget(self.docx_pdf)
-        self.gen_btn = QPushButton("Create documents")
+        h.addWidget(self.docx_pdf)
+        v.addWidget(self.docx_row)
+        self.gen_btn = set_role(QPushButton("Create documents"), "primary")
         self.gen_btn.setDefault(True)
         self.gen_btn.clicked.connect(self.generate)
         v.addWidget(self.gen_btn)
+        self.status = label("", "muted", wrap=True)
+        v.addWidget(self.status)
         v.addStretch()
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.left)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # the form follows the panel width
-        scroll.setMinimumWidth(400)
-        return scroll
+        self.form_scroll = scroll(form)
+        self.form_scroll.setFixedWidth(FORM_W)
+        self.form_scroll.verticalScrollBar().valueChanged.connect(self.glass.schedule)
+        row.addWidget(self.form_scroll)
+
+        self.tabs = OutputStack(self._mail())
+        self.tabs.currentChanged.connect(self._page_shown)
+        self.tabs.labels_changed.connect(self._labels_changed)
+        row.addWidget(self.tabs, 1)
 
     def _mail(self):
-        box = QWidget()
-        lay = QVBoxLayout(box)
-        self.warning = QLabel()
-        self.warning.setWordWrap(True)
-        self.warning.hide()
-        lay.addWidget(self.warning)
-        form = QFormLayout()
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(0, 76, 0, 24)
+        sheet = Sheet()
+        s = QVBoxLayout(sheet)
+        s.setContentsMargins(28, 14, 28, 22)
+        s.setSpacing(0)
         self.mail_to, self.mail_cc, self.mail_bcc, self.mail_subject = QLineEdit(), QLineEdit(), QLineEdit(), QLineEdit()
-        form.addRow("To", self.mail_to)
-        form.addRow("Cc", self.mail_cc)
-        form.addRow("Bcc", self.mail_bcc)
-        form.addRow("Subject", self.mail_subject)
+        for name, w, hint in (("To", self.mail_to, ""), ("Cc", self.mail_cc, "Add people"),
+                              ("Bcc", self.mail_bcc, "Add people"), ("Subject", self.mail_subject, "")):
+            r = QHBoxLayout()
+            r.setContentsMargins(0, 6, 0, 0)
+            n = label(name, "lbl")
+            n.setFixedWidth(64)
+            n.setBuddy(w)
+            r.addWidget(n)
+            w.setPlaceholderText(hint)
+            r.addWidget(w, 1)
+            s.addLayout(r)
+        self.mail_subject.setStyleSheet("font-weight: 600;")
         self.mail_body = QPlainTextEdit()
-        form.addRow("Message", self.mail_body)
-        self.attach_label = QLabel("—")
-        self.attach_label.setWordWrap(True)
-        form.addRow("Attachments", self.attach_label)
-        lay.addLayout(form, 1)
-        buttons = QHBoxLayout()
-        self.status = QLabel()
-        self.status.setWordWrap(True)
-        buttons.addWidget(self.status, 1)
-        self.folder_btn = QPushButton("Open folder")
-        self.folder_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.out))))
-        buttons.addWidget(self.folder_btn)
-        self.draft_btn = QPushButton("Open in mail app")
-        self.draft_btn.clicked.connect(self.open_in_mail_app)
-        buttons.addWidget(self.draft_btn)
-        self.send_btn = QPushButton("Send email")
+        self.mail_body.setMinimumHeight(260)
+        self.mail_body.setAccessibleName("Message")
+        self.mail_body.setStyleSheet("border-bottom: 0; line-height: 150%;")
+        s.addSpacing(14)
+        s.addWidget(self.mail_body, 1)
+        s.addSpacing(10)
+        s.addWidget(label("Attachments", "lbl"))
+        self.attach_label = label("—", wrap=True)
+        s.addWidget(self.attach_label)
+        v.addWidget(sheet)
+        v.addStretch()
+        wrap = QWidget()
+        h = QHBoxLayout(wrap)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.addStretch()
+        page.setMaximumWidth(760)
+        h.addWidget(page, 100)
+        h.addStretch()
+        area = scroll(wrap)
+        area.verticalScrollBar().valueChanged.connect(self.glass.schedule)
+        return area
+
+    def _toolbar(self):
+        self.title = set_role(label("New request"), "h1")
+        self.subtitle = label("", "muted")
+        self.title_box = QWidget(self.canvas)
+        tv = QVBoxLayout(self.title_box)
+        tv.setContentsMargins(0, 0, 0, 0)
+        tv.setSpacing(0)
+        tv.addWidget(self.title)
+        tv.addWidget(self.subtitle)
+        self.segments = self.glass.add(GlassSegmented(self.canvas, ["Email"]))
+        self.segments.changed.connect(self.tabs.setCurrentIndex)
+        self.tools = self.glass.add(GlassGroup(self.canvas))
+        self.folder_btn = self.tools.add("folder", "Show in folder",
+                                         lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.out))))
+        self.draft_btn = self.tools.add("mail", "Open in your mail app", self.open_in_mail_app)
+        self.send_btn = self.glass.add(GlassButton("Send", "send", self.canvas, tint=T["ink"]))
         self.send_btn.clicked.connect(self.send)
-        buttons.addWidget(self.send_btn)
-        lay.addLayout(buttons)
-        return box
+        # Zoom for the preview: a small glass capsule floating over the bottom of the pages.
+        self.zoom_bar = self.glass.add(GlassGroup(self.canvas))
+        self.zoom_bar.add("minus", "Zoom out (Ctrl −)", lambda: self._zoom("out"))
+        self.zoom_bar.add("fit", "Fit the page (Ctrl 0)", lambda: self._zoom("fit"))
+        self.zoom_bar.add("plus", "Zoom in (Ctrl +)", lambda: self._zoom("in"))
+        for keys, how in (((QKeySequence.ZoomIn, "Ctrl+="), "in"), ((QKeySequence.ZoomOut,), "out"),
+                          (("Ctrl+0",), "fit")):
+            for k in keys:
+                QShortcut(QKeySequence(k), self, activated=lambda how=how: self._zoom(how))
+
+    def _preview(self):
+        w = self.tabs.currentWidget()
+        return w if isinstance(w, Preview) else None
+
+    def _zoom(self, how):
+        p = self._preview()
+        if p is None:
+            return
+        if how == "in":
+            p.zoom_in()
+        elif how == "out":
+            p.zoom_out()
+        else:
+            p.set_zoom(1.0)
+
+    def _update_zoom_bar(self):
+        p = self._preview()
+        self.zoom_bar.setVisible(p is not None and p.has_pages())
+
+    def _sidebar(self):
+        self.sidebar = self.glass.add(GlassPanel(self.canvas, radius=24, bezel=30, blur=0.5, regular=True))
+        v = QVBoxLayout(self.sidebar)
+        top = 16 + self.frame.mac_top() + (40 if self.frame.left else 0)  # room for window buttons
+        v.setContentsMargins(12, top, 12, 12)
+        v.setSpacing(2)
+        v.addWidget(set_role(label("Form packs"), "sec"))
+        self.pack_list = QVBoxLayout()
+        self.pack_list.setSpacing(2)
+        v.addLayout(self.pack_list)
+        self.pack_group = QButtonGroup(self)
+        self.pack_group.setExclusive(True)
+        new_pack = SideButton("New pack from a document…", "plus", muted=True)
+        new_pack.setCheckable(False)
+        new_pack.clicked.connect(lambda: self.open_settings(tab=3))
+        v.addWidget(new_pack)
+        v.addSpacing(14)
+        v.addWidget(set_role(label("Presets"), "sec"))
+        self.preset_list = QVBoxLayout()
+        self.preset_list.setSpacing(2)
+        v.addLayout(self.preset_list)
+        self.preset_group = QButtonGroup(self)
+        self.preset_group.setExclusive(True)
+        self.save_preset_btn = SideButton("Save as preset…", None, muted=True)
+        self.save_preset_btn.setCheckable(False)
+        self.save_preset_btn.clicked.connect(self.save_preset)
+        v.addWidget(self.save_preset_btn)
+        self.delete_preset_btn = SideButton("Delete this preset", None, muted=True)
+        self.delete_preset_btn.setCheckable(False)
+        self.delete_preset_btn.clicked.connect(self.delete_preset)
+        v.addWidget(self.delete_preset_btn)
+        v.addStretch()
+        self.test_note = QWidget()
+        tn = QVBoxLayout(self.test_note)
+        tn.setContentsMargins(12, 4, 8, 6)
+        tn.setSpacing(0)
+        self.test_head = label("Test mode")
+        tn.addWidget(self.test_head)
+        self.test_banner = MarginNote(arrow=False, px=19)
+        tn.addWidget(self.test_banner)
+        v.addWidget(self.test_note)
+        line = QWidget()
+        line.setFixedHeight(1)
+        line.setStyleSheet("background: rgba(120,120,128,0.25);")
+        v.addSpacing(6)
+        v.addWidget(line)
+        v.addSpacing(6)
+        acct = QHBoxLayout()
+        acct.setContentsMargins(12, 0, 4, 0)
+        self.account_label = label("", "muted", wrap=True)
+        acct.addWidget(self.account_label, 1)
+        self.login_btn = QPushButton()
+        self.login_btn.clicked.connect(self.toggle_login)
+        acct.addWidget(self.login_btn)
+        v.addLayout(acct)
+        settings = SideButton("Settings", "gear")
+        settings.setCheckable(False)
+        settings.clicked.connect(lambda: self.open_settings())
+        v.addWidget(settings)
+
+    def _place(self):
+        w, h = self.canvas.width(), self.canvas.height()
+        self.content.setGeometry(0, 0, w, h)
+        self.sidebar.setGeometry(INSET, INSET, SIDEBAR_W, h - 2 * INSET)
+        left = SIDEBAR_W + 2 * INSET + 8
+        self.title_box.setGeometry(left, INSET, 300, 44)
+        right = w - INSET
+        if self.win_right is not None:
+            self.win_right.move(right - self.win_right.width(), INSET)
+            right = self.win_right.x() - 12
+        if self.win_left is not None:
+            self.win_left.move(INSET + 14, INSET + 4)
+        self.send_btn.move(right - self.send_btn.width(), INSET)
+        self.tools.move(self.send_btn.x() - 12 - self.tools.width(), INSET)
+        out_left = left + FORM_W + 28
+        x = out_left + (self.tools.x() - 12 - out_left - self.segments.width()) // 2
+        x = min(x, self.tools.x() - 12 - self.segments.width())  # never under the buttons on the right
+        self.segments.move(max(left + 180, x), INSET)
+        self.zoom_bar.move(out_left + (w - 24 - out_left - self.zoom_bar.width()) // 2,
+                           h - INSET - 8 - self.zoom_bar.height())
+        self._update_zoom_bar()
+        for wdg in (self.sidebar, self.title_box, self.segments, self.tools, self.send_btn, self.zoom_bar,
+                    self.win_left, self.win_right):
+            if wdg is not None:
+                wdg.raise_()
+        self.edge.setGeometry(self.canvas.rect())
+        self.edge.raise_()
+        self.glass.schedule()
+
+    def _labels_changed(self, labels):
+        self.segments.set_labels(labels, min(self.tabs.currentIndex(), len(labels) - 1))
+        self._place()
+
+    def _page_shown(self, index):
+        self.segments.set_current(index, emit=False)
+        self._update_zoom_bar()
+        self.glass.schedule()
 
     # --- theme ---
 
     def apply_theme(self):
         self.dark = apply_theme(self.settings.get("theme", "auto"))
-        self.test_banner.setStyleSheet(banner_style("test", self.dark, bold=True))
-        self.warning.setStyleSheet(banner_style("warn", self.dark, radius=6))
+        self.send_btn.set_tint(T["ink"] if not self.sent_at else None)
+        self.tools.restyle()
+        self.zoom_bar.restyle()
+        for note in (self.warning, self.test_banner):
+            note.restyle()
+        self.test_head.setStyleSheet(ink.hand_style(25, underline=True))
+        self.canvas.update()
+        self.glass.schedule()
 
     def _scheme_changed(self):
         self.scheme_monitor.readAllStandardOutput()
         if self.settings.get("theme") == "auto":
             self.apply_theme()
+
+    def _drag_zone(self, widget, pos):
+        """Empty toolbar space and the top of the sidebar move the window."""
+        return pos.y() < INSET + 52 and is_passive(widget)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.frame.after_show()
 
     def closeEvent(self, event):
         if self.scheme_monitor:
@@ -187,18 +464,86 @@ class MainWindow(QMainWindow):
             self.scheme_monitor.waitForFinished(1000)
         super().closeEvent(event)
 
+    # --- sidebar lists ---
+
+    def _fill_list(self, layout, group, combo, on_pick):
+        for b in group.buttons():
+            group.removeButton(b)
+        while layout.count():
+            w = layout.takeAt(0).widget()
+            if w:
+                ink.discard(w)
+        for i in range(combo.count()):
+            if combo is self.pack_combo:
+                b = PackRow(combo.itemText(i))
+                b.more.connect(lambda where, i=i: self._pack_menu(i, where))
+            else:
+                b = SideButton(combo.itemText(i))
+            b.setChecked(i == combo.currentIndex())
+            b.clicked.connect(lambda _c=False, i=i: on_pick(i))
+            group.addButton(b, i)
+            layout.addWidget(b)
+
+    def _pack_menu(self, index, where):
+        pid = self.pack_combo.itemData(index)
+        pack = next((p for p in self.packs if p.id == pid), None)
+        if pack is None:
+            return
+        m = self.pack_menu
+        m.clear()
+        for d in pack.documents:  # each document opens straight in its editor
+            word = d.kind == "docx"
+            m.add(f"{'Edit in Word' if word else 'Edit positions'}: {d.label}", "doc",
+                  lambda d=d: self.edit_document(pack, d))
+        m.add("Pack settings…", "gear", lambda: self.open_settings(tab=3, select=pack.id))
+        m.add("Show in folder", "folder", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(pack.root))))
+        m.add_separator()
+        m.add("Remove pack…", "trash", lambda: self.remove_pack(pack), danger=True)
+        m.popup(where)
+
+    def edit_document(self, pack, d):
+        if d.kind == "docx":  # new {{ placeholders }} are picked up when the packs reload
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(d.template)))
+            return
+        from .calibrate import CalibrateDialog
+
+        if CalibrateDialog(self, pack, d.id).exec():
+            self.reload()
+
+    def remove_pack(self, pack):
+        if frame.ask(self, "Remove pack?",
+                                f"Delete the pack “{pack.name}” and its documents from\n{pack.root}?\n\n"
+                                "Documents you already created are not touched.") != QMessageBox.Yes:
+            return
+        try:
+            remove_pack(pack, store.packs_dir(self.settings))
+        except (FillmateError, OSError) as e:
+            frame.tell(self, "Remove failed", str(e))
+            return
+        if self.pack and self.pack.id == pack.id:
+            self.pack = None
+        self.reload()
+
+    def rebuild_packs(self):
+        self._fill_list(self.pack_list, self.pack_group, self.pack_combo, self.pack_combo.setCurrentIndex)
+
+    def rebuild_presets(self):
+        self._fill_list(self.preset_list, self.preset_group, self.preset_combo, self.preset_combo.setCurrentIndex)
+
     # --- state ---
 
     def reload(self, first=False):
         """Re-read settings and packs (at start and after Settings)."""
         self.settings = store.load_settings()
         self.apply_theme()
-        test = self.settings["test_mode"]
-        self.test_banner.setVisible(test)
-        self.test_banner.setText(f"TEST MODE: emails go only to {', '.join(self.settings['test_recipients'])}. "
-                                 "Turn it off in Settings → General.")
+        self._show_test_mode()
         current = self.pack.id if self.pack else self.settings.get("last_pack")
         self.packs, problems = list_packs(store.packs_dir(self.settings))
+        for i, p in enumerate(self.packs):  # new {{ placeholders }} typed into a Word document become fields
+            try:
+                self.packs[i] = sync_docx_fields(p.root) or p
+            except FillmateError:
+                pass
         self.pack_combo.blockSignals(True)
         self.pack_combo.clear()
         for p in self.packs:
@@ -209,44 +554,52 @@ class MainWindow(QMainWindow):
         self.pack_changed()
         self.refresh_account()
         if problems and first:
-            QMessageBox.warning(self, "Some packs could not be loaded",
+            frame.tell(self, "Some packs could not be loaded",
                                 "\n\n".join(f"{folder.name}: {err}" for folder, err in problems))
+
+    def _show_test_mode(self):
+        self.test_note.setVisible(self.settings["test_mode"])
+        who = ", ".join(self.settings["test_recipients"])
+        self.test_banner.setText(f"emails only go to {who}" if who else
+                                 "add your own address in Settings to try sending")
 
     def pack_changed(self):
         pid = self.pack_combo.currentData()
         self.pack = next((p for p in self.packs if p.id == pid), None)
+        self.rebuild_packs()
         while self.form_holder.count():
             w = self.form_holder.takeAt(0).widget()
             if w:
-                w.deleteLater()
+                ink.discard(w)
         self.inputs = {}
         self.clear_result()
         has_pack = self.pack is not None
-        for w in (self.preset_combo, self.save_preset_btn, self.gen_btn):
+        for w in (self.save_preset_btn, self.gen_btn):
             w.setEnabled(has_pack)
+        self.subtitle.setText(self.pack.name if has_pack else "")
         if not has_pack:
-            empty = QLabel("No form pack installed yet.\n\nOpen Settings → Form packs to import one, "
-                           "or install the example to try fillmate.")
-            empty.setWordWrap(True)
+            empty = label("No form pack installed yet.\n\nOpen Settings → Form packs to import one, "
+                          "or install the example to try fillmate.", "muted", wrap=True)
             self.form_holder.addWidget(empty)
             btn = QPushButton("Open form packs")
             btn.clicked.connect(lambda: self.open_settings(tab=3))
             self.form_holder.addWidget(btn)
-            self.docx_pdf.hide()
+            self.docx_row.hide()
             self.reload_presets()
             return
         if self.settings.get("last_pack") != self.pack.id:
             self.settings["last_pack"] = self.pack.id
             store.save_settings(self.settings)
         if self.pack.description:
-            desc = QLabel(self.pack.description)
-            desc.setTextFormat(Qt.PlainText)
-            desc.setWordWrap(True)
-            desc.setStyleSheet("color: palette(placeholder-text);")
+            desc = label(self.pack.description, "muted", wrap=True)
+            desc.setContentsMargins(6, 0, 6, 0)
             self.form_holder.addWidget(desc)
         box, self.inputs = build_form(self.pack.fields, self.pack.date_format)
-        self.form_holder.addWidget(box)
-        self.docx_pdf.setVisible(any(d.kind == "docx" for d in self.pack.documents))
+        sheet = Sheet()
+        QVBoxLayout(sheet).addWidget(box)
+        sheet.layout().setContentsMargins(0, 4, 0, 4)
+        self.form_holder.addWidget(sheet)
+        self.docx_row.setVisible(any(d.kind == "docx" for d in self.pack.documents))
         self.reload_presets(first=True)
 
     def all_presets(self):
@@ -257,7 +610,7 @@ class MainWindow(QMainWindow):
     def reload_presets(self, first=False, select=None):
         self.preset_combo.blockSignals(True)
         self.preset_combo.clear()
-        self.preset_combo.addItem("— none —", None)
+        self.preset_combo.addItem("No preset", None)
         for name in self.all_presets():
             self.preset_combo.addItem(name, name)
         if first and self.preset_combo.count() > 1:
@@ -267,9 +620,10 @@ class MainWindow(QMainWindow):
         self.apply_preset()
 
     def apply_preset(self):
+        self.rebuild_presets()
         name = self.preset_combo.currentData()
         user = store.load_user_presets(self.pack.id) if self.pack else {}
-        self.delete_preset_btn.setEnabled(name in user)
+        self.delete_preset_btn.setVisible(name in user)
         if not self.pack:
             return
         values = self.all_presets().get(name, {})
@@ -280,7 +634,7 @@ class MainWindow(QMainWindow):
                 self.inputs[f.id].set(f.default)
 
     def save_preset(self):
-        name, ok = QInputDialog.getText(self, "Save preset", "Preset name (e.g. the destination):",
+        name, ok = frame.get_text(self, "Save preset", "Preset name (e.g. the destination):", ok="Save",
                                         text=self.preset_combo.currentData() or "")
         name = name.strip()
         if not ok or not name:
@@ -298,7 +652,7 @@ class MainWindow(QMainWindow):
     def delete_preset(self):
         name = self.preset_combo.currentData()
         presets = store.load_user_presets(self.pack.id)
-        if name in presets and QMessageBox.question(self, "Delete preset?", f"Delete the preset '{name}'?") == QMessageBox.Yes:
+        if name in presets and frame.ask(self, "Delete preset?", f"Delete the preset '{name}'?") == QMessageBox.Yes:
             del presets[name]
             store.save_user_presets(self.pack.id, presets)
             self.reload_presets()
@@ -321,12 +675,12 @@ class MainWindow(QMainWindow):
                 self.login_btn.setText("Set up…")
                 self.login_btn.show()
             elif email := self.auth.email():
-                self.account_label.setText(email)
+                self.account_label.setText(f"{email}\nGmail")
                 self.login_btn.setText("Sign out")
                 self.login_btn.show()
             else:
                 self.account_label.setText("Not signed in")
-                self.login_btn.setText("Sign in with Google")
+                self.login_btn.setText("Sign in")
                 self.login_btn.show()
         else:
             ok, text = s.ready()
@@ -342,17 +696,34 @@ class MainWindow(QMainWindow):
         s = self.sender()
         can_send, why = (False, "Sending is set to your mail app") if s is None else s.ready()
         self.send_btn.setVisible(s is not None)
-        self.send_btn.setEnabled(ready and can_send)
-        self.send_btn.setToolTip("" if can_send else why)
+        if self.sent_at:
+            self.send_btn.setText("Sent")
+            self.send_btn.icon_name = "check"
+            self.send_btn.set_tint(None)
+            self.send_btn.setEnabled(False)
+            self.send_btn.setToolTip(f"Sent at {self.sent_at:%H:%M}")
+        else:
+            self.send_btn.setText("Send")
+            self.send_btn.icon_name = "send"
+            self.send_btn.set_tint(T["ink"])
+            self.send_btn.setEnabled(ready and can_send)
+            self.send_btn.setToolTip("" if can_send else why)
         self.draft_btn.setEnabled(ready)
         self.folder_btn.setEnabled(ready)
+        self.glass.schedule()
 
     def clear_result(self):
-        self.outputs, self.attachments, self.out = None, [], None
+        self.outputs, self.attachments, self.out, self.sent_at = None, [], None, None
         self.tabs.clear()
         if self.pack:
             for d in self.pack.documents:
-                self.tabs.addTab(Preview(PLACEHOLDER), d.label)
+                preview = Preview(PLACEHOLDER)
+                preview.verticalScrollBar().valueChanged.connect(self.glass.schedule)
+                preview.changed.connect(self.glass.schedule)
+                preview.changed.connect(self._update_zoom_bar)
+                preview.horizontalScrollBar().valueChanged.connect(self.glass.schedule)
+                self.tabs.addTab(preview, d.label)
+        self.tabs.setCurrentIndex(0)
         for w in (self.mail_to, self.mail_cc, self.mail_bcc, self.mail_subject):
             w.clear()
         self.mail_body.clear()
@@ -369,7 +740,7 @@ class MainWindow(QMainWindow):
         name = self.preset_combo.currentData()
         preset = self.all_presets().get(name) if name else None
         profile = store.load_profile()
-        docx_pdf = self.docx_pdf.isChecked() and self.docx_pdf.isVisible()
+        docx_pdf = self.docx_pdf.isChecked() and self.docx_row.isVisible()
 
         def work():
             ctx = engine.build_context(pack, profile, values, preset)
@@ -380,10 +751,10 @@ class MainWindow(QMainWindow):
             for o in outputs:
                 try:
                     if o.kind == "pdf":
-                        previews[o.document_id] = render_pages(o.path)
+                        previews[o.document_id] = render_pages(o.path, dpi=200)
                     elif find_libreoffice():
                         converted = docx_to_pdf(o.path, preview_dir)
-                        previews[o.document_id] = render_pages(converted)
+                        previews[o.document_id] = render_pages(converted, dpi=200)
                         if docx_pdf:
                             attachments.append(Path(shutil.copy(converted, out / converted.name)))
                     else:
@@ -402,6 +773,7 @@ class MainWindow(QMainWindow):
 
     def generated(self, r):
         self.gen_btn.setEnabled(True)
+        self.sent_at = None
         self.status.setText(f"Saved in {r['out']}")
         self.out, self.outputs, self.attachments = r["out"], r["outputs"], r["attachments"]
         for i, d in enumerate(self.pack.documents):
@@ -413,7 +785,7 @@ class MainWindow(QMainWindow):
                 preview.message(content)
         w = r["ctx"].warnings
         self.warning.setVisible(bool(w))
-        self.warning.setText("\n".join(f"Warning: {x}" for x in w))
+        self.warning.setText("\n".join(w))
         d = r["draft"]
         self.mail_to.setText(", ".join(d["to"]))
         self.mail_cc.setText(", ".join(d["cc"]))
@@ -427,7 +799,7 @@ class MainWindow(QMainWindow):
         self.gen_btn.setEnabled(self.pack is not None)
         self.status.setText("")
         self.refresh_account()
-        QMessageBox.warning(self, "fillmate", message)
+        frame.tell(self, "fillmate", message)
 
     def draft_fields(self):
         split = lambda s: engine.split_addresses([s])
@@ -449,15 +821,24 @@ class MainWindow(QMainWindow):
         try:
             mail.check_recipients(to, cc, bcc, test_mode, allowed)
         except FillmateError as e:
-            QMessageBox.warning(self, "Sending blocked", str(e))
+            frame.tell(self, "Sending blocked", str(e))
             return
         s = self.sender()
-        text = (f"From: {s.from_address()}\nTo: {', '.join(to)}"
-                + (f"\nCc: {', '.join(cc)}" if cc else "") + (f"\nBcc: {', '.join(bcc)}" if bcc else "")
-                + f"\n\nSubject: {subject}\nAttachments: {', '.join(p.name for p in files)}")
-        if not test_mode:
-            text += "\n\nTest mode is off: the email goes to the real recipients."
-        if QMessageBox.question(self, "Send this email?", text) != QMessageBox.Yes:
+        import html
+        e = html.escape
+        row = lambda k, v: (f'<tr><td style="color:{T["label2"]}; padding:5px 12px 5px 0;">{k}</td>'
+                            f'<td style="padding:5px 0;">{v}</td></tr>')
+        rows = row("From", e(s.from_address())) + row("To", highlight(", ".join(to)))
+        if cc:
+            rows += row("Cc", e(", ".join(cc)))
+        if bcc:
+            rows += row("Bcc", e(", ".join(bcc)))
+        rows += row("Subject", e(subject)) + row("Files", f"{len(files)} attachment{'s' if len(files) != 1 else ''}")
+        note = ("Test mode: it only goes to your test addresses." if test_mode
+                else "Test mode is off: this goes to the real recipients.")
+        ok = self.check.ask(self.send_btn.geometry(), f"<table>{rows}</table>", note,
+                            "Send to me" if test_mode else "Send")
+        if not ok:
             return
         self.send_btn.setEnabled(False)
         self.status.setText("Sending…")
@@ -465,7 +846,8 @@ class MainWindow(QMainWindow):
                         lambda _: self.sent(to + cc + bcc), self.task_failed)
 
     def sent(self, rcpt):
-        self.status.setText(f"Sent to {', '.join(rcpt)} at {dt.datetime.now():%H:%M}.")
+        self.sent_at = dt.datetime.now()
+        self.status.setText(f"Sent to {', '.join(rcpt)} at {self.sent_at:%H:%M}.")
         self.update_buttons()
 
     def toggle_login(self):
@@ -482,14 +864,35 @@ class MainWindow(QMainWindow):
 
     def login_failed(self, message):
         self.refresh_account()
-        QMessageBox.warning(self, "Google sign-in", message)
+        frame.tell(self, "Google sign-in", message)
 
-    def open_settings(self, tab=0):
+    def open_settings(self, tab=0, select=None):
         from .settings import SettingsDialog
 
         dialog = SettingsDialog(self, self.bridge, self.auth, tab=tab)
+        if select:
+            dialog.refresh_packs(select=select)
+        self._packs_dirty = False
+        dialog.changed.connect(self._settings_changed)  # every change shows here at once
         dialog.exec()
-        self.reload()
+        if self._packs_dirty:
+            self.reload()
+
+    def _settings_changed(self, packs):
+        """A setting changed in Settings: apply it now. Pack changes reload the packs (and the form)."""
+        if packs:
+            self._packs_dirty = True
+            self.reload()
+            return
+        old = self.settings
+        self.settings = store.load_settings()
+        if (old.get("packs_dir"), old.get("output_dir")) != (self.settings.get("packs_dir"),
+                                                             self.settings.get("output_dir")):
+            self.reload()
+            return
+        self.apply_theme()
+        self._show_test_mode()
+        self.refresh_account()
 
 
 def main():
@@ -498,6 +901,7 @@ def main():
     app.setApplicationName("fillmate")
     app.setDesktopFileName(APP_ID)
     app.setWindowIcon(icon())
+    ink.load_fonts()
     win = MainWindow()
     win.show()
     sys.exit(app.exec())

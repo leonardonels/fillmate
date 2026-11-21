@@ -1,13 +1,17 @@
 """Input widgets generated from a pack's field definitions."""
 import datetime as dt
 
-from PySide6.QtCore import QDate, Qt, QTime
+from PySide6.QtCore import QDate, QSize, Qt, QTime
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDateEdit, QFormLayout, QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit,
-    QPushButton, QTimeEdit, QToolButton, QVBoxLayout, QWidget,
+    QComboBox, QDateEdit, QHBoxLayout, QLineEdit, QPlainTextEdit, QPushButton, QTimeEdit,
+    QToolButton, QVBoxLayout, QWidget,
 )
 
 from ..templating import parse_date
+from . import ink
+from .ink import CircleChoice, TickChoice, icon, label, set_role
+
+TICK_MAX = 4  # choices with more options than this stay a drop-down
 
 STRFTIME_TO_QT = {"%d": "dd", "%m": "MM", "%Y": "yyyy", "%y": "yy", "%b": "MMM", "%B": "MMMM",
                   "%a": "ddd", "%A": "dddd", "%e": "d"}
@@ -53,9 +57,10 @@ class DateList(QWidget):
         self.display = display
         self.rows = QVBoxLayout(self)
         self.rows.setContentsMargins(0, 0, 0, 0)
-        self.add_btn = QPushButton("+ Add day")
+        self.rows.setSpacing(2)
+        self.add_btn = set_role(QPushButton("+ Add day"), "add")
         self.add_btn.clicked.connect(lambda: self.add(self.dates()[-1] + dt.timedelta(days=1)))
-        self.rows.addWidget(self.add_btn)
+        self.rows.addWidget(self.add_btn, 0, Qt.AlignLeft)
         self.add()
 
     def add(self, value=None):
@@ -63,7 +68,10 @@ class DateList(QWidget):
         lay = QHBoxLayout(row)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(date_edit(value, self.display), 1)
-        rm = QToolButton(text="✕", toolTip="Remove day")
+        rm = QToolButton(toolTip="Remove day")
+        rm.setIcon(icon("close", None, 14, 2))
+        rm.setIconSize(QSize(14, 14))
+        rm.setAccessibleName("Remove day")
         rm.clicked.connect(lambda: self._remove(row))
         lay.addWidget(rm)
         self.rows.insertWidget(self.rows.count() - 1, row)
@@ -71,7 +79,7 @@ class DateList(QWidget):
     def _remove(self, row):
         if self.rows.count() > 2:
             self.rows.removeWidget(row)
-            row.deleteLater()
+            ink.discard(row)
 
     def dates(self):
         return [self.rows.itemAt(i).widget().findChild(QDateEdit).date().toPython()
@@ -81,31 +89,9 @@ class DateList(QWidget):
         values = [_to_date(v) for v in (values or [])] or [dt.date.today()]
         while self.rows.count() > 1:
             w = self.rows.takeAt(0).widget()
-            w.deleteLater()
+            ink.discard(w)
         for v in values:
             self.add(v)
-
-
-class CheckField(QWidget):
-    """A checkbox whose label wraps, so long labels never widen the form."""
-
-    def __init__(self, text):
-        super().__init__()
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        self.box = QCheckBox()
-        lay.addWidget(self.box, 0, Qt.AlignTop)
-        self.label = QLabel(text)
-        self.label.setTextFormat(Qt.PlainText)
-        self.label.setWordWrap(True)
-        self.label.mousePressEvent = lambda _e: self.box.toggle()
-        lay.addWidget(self.label, 1)
-
-    def isChecked(self):
-        return self.box.isChecked()
-
-    def setChecked(self, on):
-        self.box.setChecked(on)
 
 
 class FieldInput:
@@ -123,14 +109,19 @@ class FieldInput:
             self.widget = QTimeEdit()
             self.widget.setDisplayFormat("HH:mm")
         elif t == "bool":
-            self.widget = CheckField(f.label)
+            self.widget = CircleChoice()  # a yes/no that ends up on the form: circle one
+            self.widget.setAccessibleName(f.label)
+        elif t == "choice" and len(f.options) <= TICK_MAX:
+            self.widget = TickChoice()  # becomes tick boxes on the form
+            self.widget.setAccessibleName(f.label)
+            self.widget.addItems(f.options)
         elif t == "choice":
             self.widget = QComboBox()
             self.widget.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             self.widget.addItems(f.options)
         elif t == "multiline":
             self.widget = QPlainTextEdit()
-            self.widget.setFixedHeight(70)
+            self.widget.setFixedHeight(64)
             self.widget.setPlaceholderText(f.placeholder)
             self.widget.setTabChangesFocus(True)
         else:
@@ -142,8 +133,6 @@ class FieldInput:
 
     @property
     def row_label(self):
-        if self.field.type == "bool":
-            return ""
         return self.field.label + (" *" if self.field.required else "")
 
     def get(self):
@@ -189,15 +178,35 @@ class FieldInput:
 
 
 def build_form(fields, date_format):
-    """A QFormLayout-backed widget and the FieldInputs it contains."""
+    """The fields as rows (small label above the value; yes/no beside it) and their FieldInputs."""
     box = QWidget()
-    form = QFormLayout(box)
-    form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+    lay = QVBoxLayout(box)
+    lay.setContentsMargins(16, 8, 16, 12)
+    lay.setSpacing(12)
     inputs = {}
     for f in fields:
         fi = FieldInput(f, date_format)
-        label = QLabel(fi.row_label)
-        label.setTextFormat(Qt.PlainText)  # labels come from the pack
-        form.addRow(label, fi.widget)
+        name = label(fi.row_label)  # plain text: labels come from the pack
+        if f.type == "bool":
+            name.setStyleSheet("font-size: 15px;")
+            name.setWordWrap(True)
+            row = QWidget()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.addWidget(name, 1)
+            h.addWidget(fi.widget, 0)
+            fi.widget.setFixedWidth(120)
+            lay.addWidget(row)
+        else:
+            name.setProperty("role", "lbl")
+            name.setWordWrap(True)
+            row = QWidget()
+            v = QVBoxLayout(row)
+            v.setContentsMargins(0, 0, 0, 0)
+            v.setSpacing(2)
+            v.addWidget(name)
+            v.addWidget(fi.widget)
+            lay.addWidget(row)
+        name.setBuddy(fi.widget)
         inputs[f.id] = fi
     return box, inputs

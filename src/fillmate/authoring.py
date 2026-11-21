@@ -96,6 +96,67 @@ def set_document_fill(root, doc_id, entries):
     raise PackError(f"No document '{doc_id}' in the pack.")
 
 
+def save_positions(root, doc_id, entries, new_fields=()):
+    """Save a document's fill entries together with the fields created while placing them.
+
+    One write: nothing reaches pack.yaml until the person saves, so leaving the editor
+    without saving never leaves half-made fields behind.
+    """
+    spec = read_spec(root)
+    existing = {f.get("id") for sec in ("profile", "fields") for f in spec.get(sec) or []}
+    for nf in new_fields:
+        if nf["id"] in existing:
+            continue
+        if not NAME_RE.match(nf["id"]):
+            raise PackError(f"'{nf['id']}' cannot be used as a field id.")
+        section = nf.get("section", "fields")
+        if spec.get(section) is None:
+            spec[section] = CommentedSeq()
+        m = CommentedMap(id=nf["id"], label=nf["label"])
+        if nf.get("type", "text") != "text":
+            m["type"] = nf["type"]
+        if nf.get("options"):
+            m["options"] = _flow(list(nf["options"]))
+        m.fa.set_flow_style()
+        spec[section].append(m)
+        existing.add(nf["id"])
+    for doc in spec.get("documents") or []:
+        if doc.get("id") == doc_id:
+            doc["fill"] = CommentedSeq(entry_to_yaml(e) for e in entries)
+            return write_spec(root, spec)
+    raise PackError(f"No document '{doc_id}' in the pack.")
+
+
+def field_uses(root, field_id):
+    """Where pack.yaml mentions a field, other than its own definition (empty = unused)."""
+    spec = read_spec(root)
+    word = re.compile(rf"\b{re.escape(field_id)}\b")
+    places = []
+    for key, value in spec.items():
+        if key in ("profile", "fields"):
+            continue
+        buf = io.StringIO()
+        _yaml().dump({key: value}, buf)
+        if word.search(buf.getvalue()):
+            places.append(key)
+    return places
+
+
+def remove_field(root, field_id):
+    """Delete a field nothing uses (made by mistake, or no longer needed)."""
+    places = field_uses(root, field_id)
+    if places:
+        raise PackError(f"'{field_id}' is still used in: {', '.join(places)}.")
+    spec = read_spec(root)
+    for sec in ("profile", "fields"):
+        items = spec.get(sec) or []
+        for i, f in enumerate(items):
+            if f.get("id") == field_id:
+                del items[i]
+                return write_spec(root, spec)
+    raise PackError(f"No field '{field_id}' in the pack.")
+
+
 def add_field(root, field_id, label, field_type="text", section="fields"):
     if not NAME_RE.match(field_id):
         raise PackError("A field id uses letters, digits and _, and does not start with a digit.")
@@ -139,9 +200,8 @@ def _field_id(name, used):
     return fid
 
 
-def create_pack_from_pdf(pdf_path, packs_dir, name):
-    """Make a new pack folder around a PDF. Fillable fields become pack fields automatically."""
-    pdf_path, packs_dir = Path(pdf_path), Path(packs_dir)
+def _new_pack_root(packs_dir, name):
+    packs_dir = Path(packs_dir)
     pack_id = slug(name, 40).lower().replace("_", "-").strip("-") or "my-pack"
     if not ID_RE.match(pack_id):
         pack_id = "pack-" + pack_id
@@ -149,6 +209,144 @@ def create_pack_from_pdf(pdf_path, packs_dir, name):
     while root.exists():
         root, n = packs_dir / f"{pack_id}-{n}", n + 1
     root.mkdir(parents=True)
+    return root
+
+
+def _skeleton(root, name, fields, doc):
+    spec = CommentedMap()
+    spec["fillmate"] = 1
+    spec["id"] = root.name
+    spec["name"] = name
+    spec["version"] = "1.0"
+    spec["description"] = ""
+    spec["date_format"] = "%d/%m/%Y"
+    spec["profile"] = CommentedSeq()
+    spec["fields"] = fields
+    spec["documents"] = CommentedSeq([doc])
+    spec["email"] = CommentedMap(to=CommentedSeq(), subject=name, body="Hello,\n\nplease find the document attached.\n")
+    return spec
+
+
+def _label_for(name):
+    return name.replace("_", " ").strip().capitalize() or name
+
+
+def docx_placeholders(path, pack=None):
+    """Names used as {{ placeholders }} in a Word document, minus fillmate's own helpers."""
+    from docxtpl import DocxTemplate
+
+    from .templating import make_env
+
+    env = make_env(pack)
+    try:
+        names = DocxTemplate(str(path)).get_undeclared_template_variables(jinja_env=env)
+    except Exception as e:
+        raise PackError(f"{Path(path).name}: a placeholder is not written correctly ({e}).") from e
+    return sorted(n for n in names if n not in env.globals)
+
+
+def create_pack_from_docx(docx_path, packs_dir, name):
+    """Make a new pack folder around a Word document. Each {{ placeholder }} in it becomes a field."""
+    docx_path = Path(docx_path)
+    root = _new_pack_root(packs_dir, name)
+    template = "document.docx"
+    shutil.copy(docx_path, root / template)
+    fields = CommentedSeq()
+    try:
+        for ph in docx_placeholders(root / template):
+            if NAME_RE.match(ph):
+                f = CommentedMap(id=ph, label=_label_for(ph))
+                f.fa.set_flow_style()
+                fields.append(f)
+        doc = CommentedMap(id="document", label=docx_path.stem, template=template,
+                           output=f"{docx_path.stem}_filled", placeholders=True)
+        return write_spec(root, _skeleton(root, name, fields, doc))
+    except PackError:
+        shutil.rmtree(root, ignore_errors=True)
+        raise
+
+
+def sync_docx_fields(root):
+    """Add a field for every new {{ placeholder }} typed into the pack's Word documents.
+
+    Returns the reloaded pack, or None when nothing changed.
+    """
+    pack = load_pack(root)
+    known = {f.id for f in pack.profile + pack.fields} | set(pack.computed)
+    new = []
+    for d in pack.documents:
+        if d.kind == "docx" and d.placeholders:
+            for ph in docx_placeholders(d.template, pack):
+                if ph not in known and NAME_RE.match(ph):
+                    known.add(ph)
+                    new.append(ph)
+    if not new:
+        return None
+    spec = read_spec(root)
+    if spec.get("fields") is None:
+        spec["fields"] = CommentedSeq()
+    for ph in new:
+        f = CommentedMap(id=ph, label=_label_for(ph))
+        f.fa.set_flow_style()
+        spec["fields"].append(f)
+    return write_spec(root, spec)
+
+
+def add_document(root, path):
+    """Copy a PDF or Word document into a pack as one more document to fill."""
+    root, path = Path(root), Path(path)
+    kind = path.suffix.lower()
+    if kind not in (".pdf", ".docx"):
+        raise PackError("Add a PDF or a Word (.docx) document.")
+    spec = read_spec(root)
+    docs = spec.get("documents") or CommentedSeq()
+    ids = {d.get("id") for d in docs}
+    templates = {d.get("template") for d in docs}
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "_", path.stem).strip("_").lower() or "document"
+    doc_id, n = stem, 2
+    while doc_id in ids or not ID_RE.match(doc_id):
+        doc_id, n = f"{stem}-{n}" if ID_RE.match(stem) else f"document-{n}", n + 1
+    name, n = f"{stem}{kind}", 2
+    while name in templates or (root / name).exists():
+        name, n = f"{stem}_{n}{kind}", n + 1
+    shutil.copy(path, root / name)
+    doc = CommentedMap(id=doc_id, label=path.stem, template=name, output=f"{path.stem}_filled")
+    if kind == ".docx":
+        doc["placeholders"] = True
+    docs.append(doc)
+    spec["documents"] = docs
+    try:
+        pack = write_spec(root, spec)
+    except PackError:
+        (root / name).unlink(missing_ok=True)
+        raise
+    return sync_docx_fields(root) or pack if kind == ".docx" else pack
+
+
+def remove_document(root, doc_id):
+    """Take a document out of a pack and delete its template file (unless another document uses it)."""
+    root = Path(root)
+    spec = read_spec(root)
+    docs = spec.get("documents") or []
+    if len(docs) <= 1:
+        raise PackError("A pack needs at least one document. Remove the whole pack instead.")
+    for i, d in enumerate(docs):
+        if d.get("id") == doc_id:
+            template = d.get("template")
+            del docs[i]
+            pack = write_spec(root, spec)
+            if template and all(x.get("template") != template for x in docs):
+                target = (root / template).resolve()
+                if target.parent == root.resolve() and target.is_file():
+                    target.unlink()
+            return pack
+    raise PackError(f"No document '{doc_id}' in the pack.")
+
+
+def create_pack_from_pdf(pdf_path, packs_dir, name):
+    """Make a new pack folder around a PDF. Fillable fields become pack fields automatically."""
+    pdf_path = Path(pdf_path)
+    root = _new_pack_root(packs_dir, name)
     template = "form.pdf"
     shutil.copy(pdf_path, root / template)
 
@@ -162,20 +360,9 @@ def create_pack_from_pdf(pdf_path, packs_dir, name):
         fields.append(f)
         fill.append(entry_to_yaml({"field": wname, "value": f"{{{{ {fid} }}}}"}))
 
-    spec = CommentedMap()
-    spec["fillmate"] = 1
-    spec["id"] = root.name
-    spec["name"] = name
-    spec["version"] = "1.0"
-    spec["description"] = ""
-    spec["date_format"] = "%d/%m/%Y"
-    spec["profile"] = CommentedSeq()
-    spec["fields"] = fields
     doc = CommentedMap(id="form", label=pdf_path.stem, template=template, output=f"{pdf_path.stem}_filled", fill=fill)
-    spec["documents"] = CommentedSeq([doc])
-    spec["email"] = CommentedMap(to=CommentedSeq(), subject=name, body="Hello,\n\nplease find the document attached.\n")
     try:
-        return write_spec(root, spec)
+        return write_spec(root, _skeleton(root, name, fields, doc))
     except PackError:
         shutil.rmtree(root, ignore_errors=True)
         raise
