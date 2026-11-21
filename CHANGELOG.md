@@ -35,7 +35,8 @@
   fountain pen that wrote it, on a paper tile.
 - Create documents is a glass capsule floating over the form (it stays in view when a long form scrolls under it).
   Glass lying on the window has a faint contact edge instead of a drop shadow; only popovers cast a soft one.
-  The send check's Send is a flat ink button, and focus rings show for keyboard focus only.
+  The send check's Send is a flat ink button, switches turn ink blue when on, and focus rings show for keyboard
+  focus only.
 - Two columns: the previews on the left, the form (with its title) on the right, scrolling as one. Packs, presets
   and settings moved to a glass drawer (the top-left button or Ctrl+B; Esc closes it). New previews open with the
   page's top already under the tab bar's glass.
