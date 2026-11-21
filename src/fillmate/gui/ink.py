@@ -31,7 +31,7 @@ LIGHT = {
     "label": "#1d1c1a", "label2": "#5c5a54", "rule": "#e4e1d8", "dot": QColor(27, 42, 107, 44),
     "glass": QColor(255, 255, 255, 51), "glass_reg": QColor(255, 255, 255, 30), "rim": QColor(255, 255, 255),
     "edge": QColor(0, 0, 0, 36), "shadow": QColor(30, 30, 20), "pill": QColor(255, 255, 255, 158),
-    "switch_on": "#5a5852", "track": QColor(120, 120, 128, 51), "on_ink": "#ffffff",
+    "switch_on": "#1b2a6b", "track": QColor(120, 120, 128, 51), "on_ink": "#ffffff",
     "hover": QColor(255, 255, 255, 150), "pill_rim": 255, "sheen": 90,
 }
 DARK = {
@@ -41,7 +41,7 @@ DARK = {
     "label": "#efeee9", "label2": "#a7a59e", "rule": "#363531", "dot": QColor(170, 185, 255, 34),
     "glass": QColor(36, 36, 34, 150), "glass_reg": QColor(32, 32, 30, 120), "rim": QColor(255, 255, 255, 95),
     "edge": QColor(255, 255, 255, 26), "shadow": QColor(0, 0, 0), "pill": QColor(255, 255, 255, 40),
-    "switch_on": "#8f8d86", "track": QColor(120, 120, 128, 90), "on_ink": "#101114",
+    "switch_on": "#aab9ff", "track": QColor(120, 120, 128, 90), "on_ink": "#101114",
     "hover": QColor(255, 255, 255, 30), "pill_rim": 80, "sheen": 34,
 }
 T = dict(LIGHT)
