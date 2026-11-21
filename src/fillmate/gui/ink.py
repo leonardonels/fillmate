@@ -4,9 +4,10 @@ fillmate's notes, and Liquid Glass for the tools that lie on top.
 Liquid Glass is painted here, not by the platform: each GlassPanel copies the
 content behind it, blurs it a little, bends it near the rim with a displacement
 map (the same rounded-rect lens as the design canvas), and draws the rim and a
-soft shadow. The copy is refreshed by GlassLayer.schedule(), which callers run
+faint contact shadow. The copy is refreshed by GlassLayer.schedule(), which callers run
 whenever the content under the glass changes (scrolling, new previews, resizes).
 """
+import random
 import re
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from PySide6.QtCore import (
     QEasingCurve, QEvent, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation, Signal,
 )
 from PySide6.QtGui import (
-    QBrush, QColor, QFont, QFontDatabase, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPen,
+    QBrush, QColor, QFont, QFontDatabase, QFontMetricsF, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPen,
     QPixmap,
 )
 from PySide6.QtWidgets import (
@@ -133,8 +134,10 @@ def stylesheet():
     QPushButton:hover {{ background: {'#ffffff' if light else 'rgba(255,255,255,0.14)'};
         border-color: rgba(120,120,128,0.5); }}
     QPushButton:disabled {{ color: {t['label2']}; border-color: rgba(120,120,128,0.2); }}
+    /* primary and secondary are pills: Qt drops a radius over half the height, so the height is pinned
+       (20 px text + 2 × 10 px padding + 2 × 1.5 px border = 43 px, and 21 px is half of that). */
     QPushButton[role="primary"] {{ background: transparent; border: 1.5px solid {t['ink']}; color: {t['ink']};
-        border-radius: 22px; font-size: 15px; font-weight: 600; padding: 10px 18px; }}
+        border-radius: 21px; font-size: 15px; font-weight: 600; padding: 10px 18px; min-height: 20px; }}
     QPushButton[role="primary"]:hover {{ background: {hover_css()}; border-color: {t['ink']}; }}
     QPushButton[role="primary"]:disabled {{ border-color: rgba(120,120,128,0.35); color: {t['label2']}; }}
     QPushButton[role="ink"]:hover {{ background: {t['ink']}; border: 1px solid rgba(255,255,255,0.7); }}
@@ -187,83 +190,60 @@ def label(text, role=None, wrap=False, plain=True):
 
 # --- paper ------------------------------------------------------------------
 
-INK_DROP = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 200">
-<defs><radialGradient id="g" cx="35%" cy="30%" r="80%"><stop offset="0" stop-color="{0}"/>
-<stop offset=".35" stop-color="{1}"/><stop offset="1" stop-color="{2}"/></radialGradient></defs>
-<path d="M60 10c40-14 90 6 104 44 10 28 46 26 52 56 8 42-40 70-86 62-30-6-44 20-80 12C14 176-6 130 6 96 14 72 2 30 60 10z" fill="url(#g)"/>
-<ellipse cx="70" cy="52" rx="26" ry="11" fill="#ffffff" fill-opacity=".35" transform="rotate(-24 70 52)"/>
-</svg>"""
-_drops = {}
-
-
-DROP_COLORS = {"light": ("#4a5480", "#1b2140", "#07080e"),  # the light theme's ink, nearly black when pooled
-               "dark": ("#9aa8ee", "#4a5596", "#1a1f3d")}   # the dark theme's lighter ink
-
-
-def ink_drop(width, dpr=1.0):
-    """A glossy drop of ink with its soft shadow, as an image `width` px wide at the screen's pixel
-    density (cached per theme and density)."""
-    shade_key = "dark" if QColor(T["ground"]).lightness() < 128 else "light"
-    key = (width, shade_key, dpr)
-    if key in _drops:
-        return _drops[key]
-    from PySide6.QtSvg import QSvgRenderer
-
-    pad, h = 40, int(width * 200 / 220)
-    s = dpr
-    svg = QSvgRenderer(INK_DROP.replace("{0}", DROP_COLORS[shade_key][0]).replace("{1}", DROP_COLORS[shade_key][1])
-                       .replace("{2}", DROP_COLORS[shade_key][2]).encode())
-    img = QImage(int((width + 2 * pad) * s), int((h + 2 * pad) * s), QImage.Format_ARGB32_Premultiplied)
-    img.fill(Qt.transparent)
-    shadow = QImage(img.size(), QImage.Format_ARGB32_Premultiplied)
-    shadow.fill(Qt.transparent)
-    q = QPainter(shadow)
-    q.setRenderHint(QPainter.Antialiasing)
-    svg.render(q, QRectF(pad * s, (pad + 18) * s, width * s, h * s))
-    q.end()
-    a = np.frombuffer(shadow.constBits(), np.uint8).reshape(shadow.height(), shadow.width(), 4).astype(np.float32)
-    alpha = _box_blur(a[..., 3:4], int(9 * s))[..., 0] * 0.38
-    soft = np.zeros_like(a)
-    soft[..., 3] = alpha  # black, premultiplied: colour channels stay 0
-    soft = np.ascontiguousarray(soft.clip(0, 255).astype(np.uint8))
-    shade = QImage(soft.data, soft.shape[1], soft.shape[0], QImage.Format_ARGB32_Premultiplied).copy()
-    q = QPainter(img)
-    q.setRenderHint(QPainter.Antialiasing)  # a QPainter on an image does not smooth edges unless asked
-    q.setRenderHint(QPainter.SmoothPixmapTransform)
-    q.drawImage(0, 0, shade)
-    svg.render(q, QRectF(pad * s, pad * s, width * s, h * s))
-    q.end()
-    img.setDevicePixelRatio(s)
-    _drops[key] = (img, pad)
-    return _drops[key]
-
-
 def _mark_color(alpha=140):
     c = QColor(T["label"])
     c.setAlpha(alpha)
     return c
 
 
-def _highlighter(p, center, w, h, angle):
-    """A broad stroke of highlighter: the theme's yellow, lying under the glass."""
+def _stamp(p, center, word, small, dpr=1.0):
+    """A rubber stamp in the red pen's colour: a double frame, the word, a small line under it,
+    pressed on a little crooked and worn where the rubber didn't take."""
+    big = font("display", 44, QFont.ExtraBold)
+    if _families.get("display") == "Archivo":
+        big.setVariableAxis(QFont.Tag("wdth"), 112)
+    big.setLetterSpacing(QFont.AbsoluteSpacing, 4)
+    mono = font("mono", 13)
+    mono.setLetterSpacing(QFont.AbsoluteSpacing, 2.5)
+    mono.setCapitalization(QFont.AllUppercase)
+    bw = QFontMetricsF(big).horizontalAdvance(word)
+    sw = QFontMetricsF(mono).horizontalAdvance(small) if small else 0
+    W, H = max(bw, sw) + 56, (96 if small else 74)
+    img = QImage(int((W + 8) * dpr), int((H + 8) * dpr), QImage.Format_ARGB32_Premultiplied)
+    img.setDevicePixelRatio(dpr)
+    img.fill(Qt.transparent)
+    q = QPainter(img)
+    q.setRenderHint(QPainter.Antialiasing)
+    red = QColor(T["red"])
+    q.setPen(QPen(red, 3.2))
+    q.drawRoundedRect(QRectF(4, 4, W, H), 9, 9)
+    q.setPen(QPen(red, 1.3))
+    q.drawRoundedRect(QRectF(10, 10, W - 12, H - 12), 5, 5)
+    q.setPen(red)
+    q.setFont(big)
+    q.drawText(QRectF(4, 10, W, 56), Qt.AlignCenter, word)
+    if small:
+        q.setFont(mono)
+        q.drawText(QRectF(4, 62, W, 24), Qt.AlignCenter, small)
+    # Wear: specks and a few scuffs where no ink reached the paper. Seeded by the text, so it
+    # doesn't change on every repaint.
+    q.setCompositionMode(QPainter.CompositionMode_DestinationOut)
+    rnd = random.Random(word + small)
+    q.setPen(Qt.NoPen)
+    q.setBrush(QColor(0, 0, 0, 255))
+    for _ in range(int(W * H / 55)):
+        r = rnd.uniform(0.4, 1.5)
+        q.drawEllipse(QPointF(rnd.uniform(4, W + 4), rnd.uniform(4, H + 4)), r, r)
+    q.setPen(QPen(QColor(0, 0, 0, 160), 2.2, Qt.SolidLine, Qt.RoundCap))
+    for _ in range(4):
+        x, y = rnd.uniform(10, W - 20), rnd.uniform(8, 58)  # scuff the word, never the small line
+        q.drawLine(QPointF(x, y), QPointF(x + rnd.uniform(14, 40), y + rnd.uniform(-3, 3)))
+    q.end()
     p.save()
     p.translate(center)
-    p.rotate(angle)
-    r = QRectF(-w / 2, -h / 2, w, h)
-    path = QPainterPath()
-    path.addRoundedRect(r, 16, 22)
-    p.fillPath(path, QColor(T["hl"]))
-    p.setClipPath(path)
-    p.setPen(QPen(QColor(0, 0, 0, 13), 2))
-    x = r.left() - h
-    while x < r.right():  # the felt tip's streaks
-        p.drawLine(QPointF(x, r.bottom()), QPointF(x + h * 0.2, r.top()))
-        x += 7
-    shade = QLinearGradient(r.topLeft(), r.bottomLeft())
-    shade.setColorAt(0, QColor(255, 255, 255, 60))
-    shade.setColorAt(0.4, QColor(255, 255, 255, 0))
-    shade.setColorAt(1, QColor(0, 0, 0, 30))
-    p.fillRect(r, shade)
+    p.rotate(-9)
+    p.setOpacity(0.62)
+    p.drawImage(QPointF(-(W + 8) / 2, -(H + 8) / 2), img)
     p.restore()
 
 
@@ -271,9 +251,8 @@ class DotGrid(QWidget):
     """The paper every window is made of: the theme's plain ground.
 
     With `room` on (the main window) it becomes the print room behind the documents: the open pack's
-    name in huge type, highlighter strokes and a drop of ink under the glass, rulers, a registration mark
-    and edge labels, and a colour bar that doubles as the theme's legend (label, ink, red pen,
-    highlighter). With `radius` set (a function giving the window's corner radius) it paints round
+    name in huge type, rulers, a registration mark
+    and edge labels, and a colour bar that doubles as the theme's legend (label, ink, red pen). With `radius` set (a function giving the window's corner radius) it paints round
     corners. (The name is from when it was a dot grid.)"""
 
     radius = None
@@ -282,23 +261,25 @@ class DotGrid(QWidget):
         super().__init__(parent)
         self.room = False
         self.heading = ""          # the open pack's name: the big type
-        self.left = 300            # where the content starts (right of the sidebar)
+        self.left = 300            # where the content starts
+        self.right_pad = 50        # how far from the right edge the big type and stamp stop (the form's width)
         self.type_left = 0         # how far right of that the big type starts
         self.side_label = ""       # along the left edge of the content
         self.edge_label = ""       # along the right edge
         self.foot_label = ""       # along the bottom
+        self.stamp = None          # (word, small line): a rubber stamp over the big type, e.g. ("SENT", "14:32")
         self._cache = None
 
-    def set_room(self, heading="", side="", edge="", foot=""):
-        values = (heading, side, edge, foot)
-        if values != (self.heading, self.side_label, self.edge_label, self.foot_label):
-            self.heading, self.side_label, self.edge_label, self.foot_label = values
+    def set_room(self, heading="", side="", edge="", foot="", stamp=None):
+        values = (heading, side, edge, foot, stamp)
+        if values != (self.heading, self.side_label, self.edge_label, self.foot_label, self.stamp):
+            self.heading, self.side_label, self.edge_label, self.foot_label, self.stamp = values
             self.update()
 
     def paintEvent(self, _event):
         r = self.radius() if self.radius else 0
-        key = (self.size().width(), self.size().height(), r, T["ground"], T["hl"], T["label"], self.room,
-               self.heading, self.left, self.side_label, self.edge_label, self.foot_label)
+        key = (self.size().width(), self.size().height(), r, T["ground"], T["label"], self.room, self.right_pad,
+               T["red"], self.heading, self.left, self.side_label, self.edge_label, self.foot_label, self.stamp)
         if self._cache is None or self._cache[0] != key:
             dpr = self.devicePixelRatioF()
             pm = QPixmap(self.size() * dpr)
@@ -324,6 +305,8 @@ class DotGrid(QWidget):
         # The pack's name, huge and faint: which form you are filling.
         name = re.sub(r"\s*\([^)]*\)", "", self.heading).strip()  # "Travel request (example)" → TRAVEL REQUEST
         words = name.upper().split()
+        x0 = self.left + self.type_left  # over the previews, where the paper shows
+        stamp_at = QPointF(x0 + (w - self.right_pad - x0) * 0.6, h * 0.42)
         if words:
             lines = [" ".join(words)]
             if len(words) > 1:
@@ -337,8 +320,7 @@ class DotGrid(QWidget):
                 stretch = 1.25  # no wide font: widen what there is
             p.setFont(f)
             widest = max(p.fontMetrics().horizontalAdvance(line) for line in lines) * stretch
-            x0 = self.left + self.type_left  # over the previews, where the paper shows
-            room = w - x0 - 50
+            room = w - x0 - self.right_pad
             px = max(48, min(176, 100 * room / max(1, widest + (60 if len(lines) > 1 else 0))))
             f.setPixelSize(int(px))
             p.setFont(f)
@@ -352,24 +334,19 @@ class DotGrid(QWidget):
                 p.scale(stretch, 1)
                 p.drawText(QPointF(0, 0), line)
                 p.restore()
-        # Highlighter under the glass on the right, a drop of ink under the sidebar.
-        _highlighter(p, QPointF(w - 245, 18), 330, 96, 9)
-        _highlighter(p, QPointF(w - 250, h - 66), 280, 100, -6)
-        img, pad = ink_drop(260, self.devicePixelRatioF())
-        p.save()
-        p.setRenderHint(QPainter.SmoothPixmapTransform)  # it is drawn rotated
-        p.translate(70, h * 0.56)  # behind the sidebar's empty middle, where the glass can bend it
-        p.rotate(-12)
-        p.drawImage(QPointF(-130 - pad, -118 - pad), img)
-        p.restore()
-        # Printer's marks: rulers, registration, labels, colour bar.
+            # The stamp lands across the end of the first line, as if pressed on after filling.
+            first = p.fontMetrics().horizontalAdvance(lines[0]) * stretch
+            stamp_at = QPointF(min(x0 + first - 40, w - self.right_pad - 170), y - px * 0.55)
+        if self.stamp:
+            _stamp(p, stamp_at, *self.stamp, self.devicePixelRatioF())
+        # Printer's marks: a ruler on the right edge, registration, labels, colour bar.
+        # (No ruler on the left: it sat half under the sidebar's edge and read as a glitch.)
         mark = _mark_color()
         p.setPen(QPen(mark, 1))
-        for x, top in ((14, 140.0), (w - 20, h - 440)):
-            y = top
-            while y < top + 300:
-                p.drawLine(QPointF(x, y), QPointF(x + 6, y))
-                y += 8
+        x, y = w - 20, h - 440.0
+        while y < h - 140:
+            p.drawLine(QPointF(x, y), QPointF(x + 6, y))
+            y += 8
         cx, cy = self.left + self.type_left + 40, h - 19
         p.drawEllipse(QPointF(cx, cy), 7, 7)
         p.drawLine(QPointF(cx - 13, cy), QPointF(cx + 13, cy))
@@ -388,8 +365,8 @@ class DotGrid(QWidget):
                 p.restore()
         if self.foot_label:
             p.drawText(QPointF(cx + 26, h - 15), self.foot_label)
-        x = w - 40 - 4 * 15
-        for color in (T["label"], T["ink"], T["red"], T["hl"]):
+        x = w - 40 - 3 * 15
+        for color in (T["label"], T["ink"], T["red"]):
             p.fillRect(QRectF(x, h - 26, 12, 12), QColor(color))
             x += 15
 
@@ -453,6 +430,18 @@ def _icon_path(name):
         p.moveTo(9, 18)
         p.lineTo(15, 12)
         p.lineTo(9, 6)
+    elif name == "arrow":
+        p.moveTo(5, 12)
+        p.lineTo(19, 12)
+        p.moveTo(13, 6)
+        p.lineTo(19, 12)
+        p.lineTo(13, 18)
+    elif name == "arrow_left":
+        p.moveTo(19, 12)
+        p.lineTo(5, 12)
+        p.moveTo(11, 6)
+        p.lineTo(5, 12)
+        p.lineTo(11, 18)
     elif name == "gear":
         import math
         teeth, outer, inner = 8, 9.6, 7.4
@@ -793,6 +782,7 @@ class GlassShadow(QWidget):
         super().__init__(parent)
         self.radius = radius
         self.glow = None  # a colour: the panel is the prominent action and glows in it
+        self.lift = False  # a popover over everything: a soft ambient shadow, not just the contact edge
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
 
     def paintEvent(self, _event):
@@ -807,13 +797,18 @@ class GlassShadow(QWidget):
                 p.fillPath(glass_path(core.adjusted(-i * 0.9, -i * 0.5 + 4, i * 0.9, i * 0.9 + 4),
                                       self.radius + i), c)
             return
+        # Liquid Glass is told apart from what's under it by its rim and the way it bends the backdrop,
+        # not by a drop shadow. So glass lying on the window gets only a faint contact edge; a popover
+        # floating over everything (the send check, menus) gets a soft ambient shadow as well.
         c = QColor(T["shadow"])
-        for i in range(12, 0, -1):
-            c.setAlpha(int(2 + (12 - i) * 0.45))
-            p.fillPath(glass_path(core.adjusted(-i * 0.8, -i * 0.4 + 5, i * 0.8, i * 0.9 + 5), self.radius + i),
-                       c)
-        c.setAlpha(18)
-        p.fillPath(glass_path(core.adjusted(0, 1, 0, 1), self.radius), c)
+        if self.lift:
+            for i in range(10, 0, -1):
+                c.setAlpha(int(1 + (10 - i) * 0.25))
+                p.fillPath(glass_path(core.adjusted(-i * 0.8, -i * 0.4 + 3, i * 0.8, i * 0.8 + 3), self.radius + i),
+                           c)
+        for i in range(3, 0, -1):
+            c.setAlpha(2 + (3 - i) * 2)
+            p.fillPath(glass_path(core.adjusted(-i * 0.4, -i * 0.2 + 1, i * 0.4, i * 0.5 + 1), self.radius + i), c)
 
 
 class GlassLayer:
@@ -847,8 +842,10 @@ class GlassPanel(QWidget):
     tint: a colour for the one prominent action (Send).
     """
 
-    def __init__(self, parent=None, radius=22, bezel=18, blur=0.8, regular=False, tint=None, shadow=True):
+    def __init__(self, parent=None, radius=22, bezel=18, blur=0.8, regular=False, tint=None, shadow=True,
+                 lift=False):
         super().__init__(parent)
+        self.lift = lift  # floats over everything (a popover): a soft shadow as well as the contact edge
         self.no_shadow = not shadow
         self.radius, self.bezel, self.blur = radius, bezel, blur
         self.regular, self.tint = regular, tint
@@ -870,7 +867,8 @@ class GlassPanel(QWidget):
         m = GlassShadow.MARGIN
         self.shadow.setGeometry(self.geometry().adjusted(-m, -m, m, m))
         self.shadow.glow = None
-        self.shadow.setVisible(self.isVisible())
+        self.shadow.lift = getattr(self, "lift", False)
+        self.shadow.setVisible(self.isVisible() and not getattr(self, "bare", False))
         self.shadow.stackUnder(self)
         self.shadow.update()
 
@@ -927,11 +925,22 @@ class GlassPanel(QWidget):
             self.image = glass_image(pix, self.radius, self.bezel, self.blur)
         self.update()
 
+    def set_bare(self, bare):
+        """Drop the glass and keep only what is on it, for a control that lies on another piece of glass
+        for a while (the drawer's toggle while the drawer is open): no glass on glass."""
+        self.bare = bare
+        if self.shadow is not None:
+            self.shadow.setVisible(self.isVisible() and not bare)
+        self.update()
+
     def paintEvent(self, _event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r = QRectF(self.rect())
         path = glass_path(r, self.radius)
+        if getattr(self, "bare", False):
+            self.paint_content(p)
+            return
         p.save()
         p.setClipPath(path)
         if self.image is not None:
@@ -950,19 +959,37 @@ class GlassPanel(QWidget):
 
 
 class GlassButton(GlassPanel):
-    """A capsule of glass that is itself a button (Send, Done, Save)."""
+    """A capsule of glass that is itself a button (Send, Done, Save).
+
+    filled: a flat fill of the tint with a light label, for the one action that commits something and sits
+    on another piece of glass (the send check's Send). Clear glass on glass would read as a second
+    pane; a filled control reads as a button lying on the first."""
 
     clicked = Signal()
 
-    def __init__(self, text="", icon_name=None, parent=None, tint=None, width=96):
-        super().__init__(parent, radius=22, tint=tint)
+    def __init__(self, text="", icon_name=None, parent=None, tint=None, width=96, icon_trails=False,
+                 filled=False):
+        super().__init__(parent, radius=22, tint=tint, shadow=not filled)  # a filled button is ink, it casts none
+        self.filled = filled
         self.hoverable = True
         self.text, self.icon_name = text, icon_name
+        self.icon_trails = icon_trails  # the icon after the label (Create documents →), not before
         self.setFixedSize(width, 44)
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.StrongFocus)
         self._down = False
         self.press = Tween(self)
+        self.key_focus = False  # the ring shows for Tab focus only, not when a dialog focuses it for Enter
+
+    def focusInEvent(self, event):
+        self.key_focus = event.reason() in (Qt.TabFocusReason, Qt.BacktabFocusReason)
+        super().focusInEvent(event)
+        self.update()
+
+    def focusOutEvent(self, event):
+        self.key_focus = False
+        super().focusOutEvent(event)
+        self.update()
 
     def setText(self, text):
         self.text = text
@@ -997,15 +1024,30 @@ class GlassButton(GlassPanel):
         else:
             super().keyPressEvent(event)
 
+    def paintEvent(self, event):
+        if not (self.filled and self.tint):
+            super().paintEvent(event)
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect())
+        path = glass_path(r, self.radius)
+        base = QColor(self.tint) if self.isEnabled() else QColor(120, 120, 128, 90)
+        p.fillPath(path, base)  # flat: no sheen or rim, it is ink rather than a pane of glass
+        if self.isEnabled():
+            p.fillPath(path, QColor(255, 255, 255, int(34 * max(self.hover.value, self.press.value))))
+        self.paint_content(p)
+
     def paint_content(self, p):
         k = self.press.value
         if k > 0.01:  # pressed: the glass catches more light and the label swells, then settles
-            paint_hover(p, glass_path(QRectF(self.rect()), self.radius), k)
+            if not self.filled:
+                paint_hover(p, glass_path(QRectF(self.rect()), self.radius), k)
             c = self.rect().center()
             p.translate(c.x(), c.y())
             p.scale(1 + 0.06 * k, 1 + 0.06 * k)
             p.translate(-c.x(), -c.y())
-        color = QColor(T["ink"] if self.tint else T["label"])
+        color = QColor(T["on_ink"] if self.filled and self.tint else T["ink"] if self.tint else T["label"])
         if not self.isEnabled():
             color = QColor(T["label2"])
             color.setAlpha(150)
@@ -1015,10 +1057,11 @@ class GlassButton(GlassPanel):
         tw = fm.horizontalAdvance(self.text)
         iw = 22 if self.icon_name else 0
         x = (self.width() - tw - iw) / 2
+        tx, ix = (x, x + tw + 6) if self.icon_trails else (x + iw, x)
         if self.icon_name:
-            icon(self.icon_name, color.name(), 16, 2.1).paint(p, QRect(int(x), 14, 16, 16))
-        p.drawText(QRectF(x + iw, 0, tw + 2, self.height()), Qt.AlignVCenter | Qt.AlignLeft, self.text)
-        if self.hasFocus():
+            icon(self.icon_name, color.name(), 16, 2.1).paint(p, QRect(int(ix), 14, 16, 16))
+        p.drawText(QRectF(tx, 0, tw + 2, self.height()), Qt.AlignVCenter | Qt.AlignLeft, self.text)
+        if self.hasFocus() and self.key_focus:
             p.setPen(QPen(QColor(T["ink"]), 1.5))
             p.setBrush(Qt.NoBrush)
             p.drawPath(glass_path(QRectF(self.rect()).adjusted(2, 2, -2, -2), self.radius - 2))
@@ -1100,6 +1143,7 @@ class GlassSegmented(GlassPanel):
         self.setFixedHeight(44)
         self.setCursor(Qt.PointingHandCursor)
         self.setFocusPolicy(Qt.StrongFocus)
+        self.key_focus = False
         self.setAccessibleName("Outputs")
         self._fit()
 
@@ -1196,10 +1240,21 @@ class GlassSegmented(GlassPanel):
             p.setFont(font("ui", 14, QFont.DemiBold if i == self.current else QFont.Medium))
             text = p.fontMetrics().elidedText(self.labels[i], Qt.ElideMiddle, int(r.width()) - 24)
             p.drawText(r, Qt.AlignCenter, text)
-        if self.hasFocus():
+        if self.hasFocus() and self.key_focus:
             p.setPen(QPen(QColor(T["ink"]), 1.5))
             p.setBrush(Qt.NoBrush)
             p.drawPath(glass_path(QRectF(self.rect()).adjusted(2, 2, -2, -2), self.radius - 2))
+
+    # The ring shows for Tab focus only, not after a click (or when focus comes back from the send check).
+    def focusInEvent(self, event):
+        self.key_focus = event.reason() in (Qt.TabFocusReason, Qt.BacktabFocusReason)
+        super().focusInEvent(event)
+        self.update()
+
+    def focusOutEvent(self, event):
+        self.key_focus = False
+        super().focusOutEvent(event)
+        self.update()
 
 
 # --- controls --------------------------------------------------------------------
@@ -1646,7 +1701,7 @@ class GlassMenu(GlassPanel):
     """A pop-up menu made of Liquid Glass, inside the window (so it can bend what is behind it)."""
 
     def __init__(self, parent, width=230):
-        super().__init__(parent, radius=18, bezel=22, blur=5, regular=True)
+        super().__init__(parent, radius=18, bezel=22, blur=5, regular=True, lift=True)
         self.setFixedWidth(width)
         self.box = QVBoxLayout(self)
         self.box.setContentsMargins(6, 6, 6, 6)

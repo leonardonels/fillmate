@@ -4,9 +4,7 @@
     <linearGradient id="tileRim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".9"/><stop offset=".25" stop-color="#fff" stop-opacity="0"/><stop offset=".85" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#fff" stop-opacity=".35"/></linearGradient>
     <linearGradient id="sheet" x1="0" y1="0" x2=".4" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.92"/><stop offset="1" stop-color="#fff" stop-opacity="0.55"/></linearGradient>
     <linearGradient id="sheetRim" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="1"/><stop offset=".45" stop-color="#fff" stop-opacity=".08"/><stop offset="1" stop-color="#fff" stop-opacity="0.70"/></linearGradient>
-    <radialGradient id="ink" cx="35%" cy="30%" r="80%"><stop offset="0" stop-color="#6b78b8"/><stop offset=".4" stop-color="#1b2a6b"/><stop offset="1" stop-color="#0a0d22"/></radialGradient>
-    <linearGradient id="dropRim" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".95"/><stop offset=".4" stop-color="#fff" stop-opacity="0"/><stop offset=".8" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#fff" stop-opacity=".55"/></linearGradient>
-    <linearGradient id="spec" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".85"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+    <linearGradient id="barrel" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4a58a4"/><stop offset=".45" stop-color="#1e2753"/><stop offset="1" stop-color="#0e1330"/></linearGradient>
   </defs>
   <rect x="16" y="16" width="224" height="224" rx="52" fill="url(#tile)"/>
   <rect x="17" y="17" width="222" height="222" rx="51" fill="none" stroke="url(#tileRim)" stroke-width="2"/>
@@ -21,11 +19,17 @@
   <rect x="78" y="128" width="34" height="9" rx="4.5" fill="#1d1c1a" fill-opacity=".28"/>
   <path d="M80 158h70" stroke="#1d1c1a" stroke-opacity=".3" stroke-width="5" stroke-linecap="round"/>
   </g>
-  <g transform="translate(130 140) scale(.42)">
-    <path d="M60 10c40-14 90 6 104 44 10 28 46 26 52 56 8 42-40 70-86 62-30-6-44 20-80 12C14 176-6 130 6 96 14 72 2 30 60 10z" fill="#000" fill-opacity="0.063" transform="translate(0 10) scale(1.00)"/><path d="M60 10c40-14 90 6 104 44 10 28 46 26 52 56 8 42-40 70-86 62-30-6-44 20-80 12C14 176-6 130 6 96 14 72 2 30 60 10z" fill="#000" fill-opacity="0.063" transform="translate(0 14) scale(1.02)"/><path d="M60 10c40-14 90 6 104 44 10 28 46 26 52 56 8 42-40 70-86 62-30-6-44 20-80 12C14 176-6 130 6 96 14 72 2 30 60 10z" fill="#000" fill-opacity="0.063" transform="translate(0 18) scale(1.04)"/><path d="M60 10c40-14 90 6 104 44 10 28 46 26 52 56 8 42-40 70-86 62-30-6-44 20-80 12C14 176-6 130 6 96 14 72 2 30 60 10z" fill="#000" fill-opacity="0.063" transform="translate(0 22) scale(1.06)"/>
-    <path d="M60 10c40-14 90 6 104 44 10 28 46 26 52 56 8 42-40 70-86 62-30-6-44 20-80 12C14 176-6 130 6 96 14 72 2 30 60 10z" fill="url(#ink)" fill-opacity="0.94"/>
-    <path d="M60 10c40-14 90 6 104 44 10 28 46 26 52 56 8 42-40 70-86 62-30-6-44 20-80 12C14 176-6 130 6 96 14 72 2 30 60 10z" fill="none" stroke="url(#dropRim)" stroke-width="5"/>
-    <ellipse cx="68" cy="50" rx="34" ry="15" fill="url(#spec)" transform="rotate(-24 68 50)"/>
-    <ellipse cx="150" cy="150" rx="26" ry="7" fill="#fff" fill-opacity=".22" transform="rotate(-18 150 150)"/>
+  <!-- The fountain pen that filled the sheet in, lying across it with its nib at the handwriting -->
+  <g transform="translate(128 106) rotate(45) scale(.33) translate(0 -20)">
+    <rect x="20" y="16" width="400" height="26" rx="13" fill="#000" fill-opacity="0.06"/><rect x="20" y="20" width="400" height="28" rx="14" fill="#000" fill-opacity="0.05"/><rect x="18" y="24" width="404" height="30" rx="15" fill="#000" fill-opacity="0.04"/>
+    <path d="M0 20 L46 11 L46 29 Z" fill="#c9cdd8"/>
+    <path d="M4 20 L40 20" stroke="#6b7186" stroke-width="1.5"/>
+    <rect x="46" y="10" width="40" height="20" rx="3" fill="#0e1330"/>
+    <rect x="86" y="7" width="6" height="26" rx="1" fill="#c9a45c"/>
+    <rect x="92" y="7" width="248" height="26" rx="12" fill="url(#barrel)"/>
+    <rect x="336" y="6" width="82" height="28" rx="13" fill="#0e1330"/>
+    <rect x="342" y="2" width="70" height="5" rx="2.5" fill="#c9a45c"/>
+    <rect x="98" y="11" width="230" height="3" rx="1.5" fill="#fff" fill-opacity=".4"/>
+    <rect x="342" y="10" width="68" height="3" rx="1.5" fill="#fff" fill-opacity=".2"/>
   </g>
 </svg>
