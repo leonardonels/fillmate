@@ -29,8 +29,11 @@
 - Dark theme: smoky glass that stays dark over the white page of a preview, fainter rims and selection pills,
   a yellow highlighter with dark text, and visible edges around grouped settings.
 - The dot grid is replaced by a print room: the open pack's name in huge faint Archivo Expanded over the previews,
-  highlighter strokes and a drop of ink under the glass, a registration mark, a ruler, a test-mode
-  label along the edge and a colour bar (label, ink, red pen, highlighter). Other windows get plain paper. The dark theme's ground and paper are warmer.
-- New app icon in Liquid Glass layers: a tilted frosted sheet filled in by hand under the highlighter, and a
-  drop of ink on a paper tile.
+  a rubber stamp for where the request stands (draft, filled, sent), a registration mark, a ruler, a test-mode
+  label along the edge and a colour bar (label, ink, red pen). Other windows get plain paper. The dark theme's ground and paper are warmer.
+- New app icon in Liquid Glass layers: a tilted frosted sheet filled in by hand under the highlighter, and the
+  fountain pen that wrote it, on a paper tile.
+- Create documents is a glass capsule floating over the form (it stays in view when a long form scrolls under it).
+  Glass lying on the window has a faint contact edge instead of a drop shadow; only popovers cast a soft one.
+  The send check's Send is a flat ink button, and focus rings show for keyboard focus only.
 - Requires PySide6 below 6.12: 6.12 releases Python's None once too often on Python 3.10–3.11 and the app aborts.

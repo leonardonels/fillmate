@@ -4,8 +4,8 @@ import shutil
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QEventLoop, QProcess, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QIcon, QKeySequence, QShortcut
+from PySide6.QtCore import QEventLoop, QPoint, QProcess, Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QFont, QFontMetrics, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget,
@@ -84,7 +84,7 @@ class SendCheck(GlassPanel):
     """The last check before sending, opened from the Send button."""
 
     def __init__(self, parent):
-        super().__init__(parent, radius=28, bezel=30, blur=6, regular=True)
+        super().__init__(parent, radius=28, bezel=30, blur=6, regular=True, lift=True)
         self.setFixedWidth(360)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(20, 18, 20, 16)
@@ -97,15 +97,14 @@ class SendCheck(GlassPanel):
         self.note = MarginNote(px=20)
         lay.addWidget(self.note)
         lay.addStretch()
+        # Send is the same glass capsule as the toolbar's Send that opened this. No Cancel button:
+        # clicking anywhere outside the check, or Esc, already cancels.
         buttons = QHBoxLayout()
-        cancel = QPushButton("Cancel")
-        cancel.clicked.connect(lambda: self._done(False))
-        self.ok = set_role(QPushButton("Send"), "primary")  # ink label, like Create documents
+        buttons.addStretch()
+        self.ok = GlassButton("Send", "send", self, tint=T["ink"], filled=True)
         self.ok.clicked.connect(lambda: self._done(True))
-        for b in (cancel, self.ok):
-            b.setMinimumHeight(40)
-            b.setStyleSheet("border-radius: 20px; font-size: 14px; padding: 8px 16px;")
-            buttons.addWidget(b)
+        buttons.addWidget(self.ok)
+        buttons.addStretch()
         lay.addLayout(buttons)
         self.loop, self.result = None, False
         self.catcher = QWidget(parent)  # blocks the window behind while the check is open
@@ -118,6 +117,8 @@ class SendCheck(GlassPanel):
         self.note.setText(note)
         self.note.setVisible(bool(note))
         self.ok.setText(ok_text)
+        self.ok.set_tint(T["ink"])  # the theme may have changed since the check was built
+        self.ok.setFixedWidth(QFontMetrics(ink.font("ui", 15, QFont.DemiBold)).horizontalAdvance(ok_text) + 22 + 44)
         # Height from the wrapped text at this width, so long subjects never push rows under the note.
         lay = self.layout()
         lay.activate()
@@ -230,16 +231,24 @@ class MainWindow(QMainWindow):
         self.docx_pdf.toggled.connect(self._remember_docx_pdf)
         h.addWidget(self.docx_pdf)
         v.addWidget(self.docx_row)
-        self.gen_btn = set_role(QPushButton("Create documents"), "primary")
-        self.gen_btn.setDefault(True)
+        # Create documents is glass, so it can't sit inside the form (the content it would bend): it floats
+        # on the glass layer over this slot, and sticks to the bottom of the form's view when a long form
+        # scrolls under it.
+        self.gen_slot = QWidget()
+        self.gen_slot.setFixedHeight(44)
+        self.gen_slot.moveEvent = lambda e: self._place_gen()
+        v.addWidget(self.gen_slot)
+        text = "Create documents"
+        width = QFontMetrics(ink.font("ui", 15, QFont.DemiBold)).horizontalAdvance(text) + 22 + 44
+        self.gen_btn = self.glass.add(GlassButton(text, "arrow", self.canvas, width=width, icon_trails=True))
         self.gen_btn.clicked.connect(self.generate)
-        v.addWidget(self.gen_btn)
         self.status = label("", "muted", wrap=True)
         v.addWidget(self.status)
         v.addStretch()
         self.form_scroll = scroll(form)
         self.form_scroll.setFixedWidth(FORM_W)
         self.form_scroll.verticalScrollBar().valueChanged.connect(self.glass.schedule)
+        self.form_scroll.verticalScrollBar().valueChanged.connect(self._place_gen)
         row.addWidget(self.form_scroll)
 
         self.tabs = OutputStack(self._mail())
@@ -422,13 +431,24 @@ class MainWindow(QMainWindow):
         self.zoom_bar.move(out_left + (w - 24 - out_left - self.zoom_bar.width()) // 2,
                            h - INSET - 8 - self.zoom_bar.height())
         self._update_zoom_bar()
+        self._place_gen()
         for wdg in (self.sidebar, self.title_box, self.segments, self.tools, self.send_btn, self.zoom_bar,
-                    self.win_left, self.win_right):
+                    self.gen_btn, self.win_left, self.win_right):
             if wdg is not None:
                 wdg.raise_()
         self.edge.setGeometry(self.canvas.rect())
         self.edge.raise_()
         self.glass.schedule()
+
+    def _place_gen(self, *_args):
+        """Create documents over its slot in the form, kept inside the form's view."""
+        if not hasattr(self, "gen_btn"):
+            return  # the slot moves while the form is first laid out, before the button exists
+        slot = self.gen_slot.mapTo(self.canvas, QPoint(0, 0))
+        view = self.form_scroll.viewport()
+        top = view.mapTo(self.canvas, QPoint(0, 0)).y()
+        y = max(top + 8, min(slot.y(), top + view.height() - self.gen_btn.height() - 16))
+        self.gen_btn.move(slot.x() + 6, y)
 
     def _labels_changed(self, labels):
         self.segments.set_labels(labels, min(self.tabs.currentIndex(), len(labels) - 1))
@@ -580,8 +600,18 @@ class MainWindow(QMainWindow):
         self.content.set_room(heading=pack.name if pack else "fillmate",
                               side=f"fillmate · form pack · {pack.id}" if pack else "fillmate",
                               edge=edge,
-                              foot=f"{pack.id if pack else 'fillmate'} · {dt.date.today():%d %b %Y}")
+                              foot=f"{pack.id if pack else 'fillmate'} · {dt.date.today():%d %b %Y}",
+                              stamp=self._stamp() if pack else None)
         self.glass.schedule()
+
+    def _stamp(self):
+        """Where this request stands, as a rubber stamp on the print room: draft, filled, sent."""
+        if getattr(self, "sent_at", None):
+            test = " · test" if self.settings.get("test_mode") else ""
+            return "SENT", f"{self.sent_at:%d %b %H:%M}{test}"
+        if getattr(self, "outputs", None) is not None and getattr(self, "filled_at", None):
+            return "FILLED", f"{self.filled_at:%d %b %H:%M}"
+        return "DRAFT", f"{dt.date.today():%d %b %Y}"
 
     def pack_changed(self):
         pid = self.pack_combo.currentData()
@@ -734,7 +764,7 @@ class MainWindow(QMainWindow):
             self.send_btn.setToolTip("" if can_send else why)
         self.draft_btn.setEnabled(ready)
         self.folder_btn.setEnabled(ready)
-        self.glass.schedule()
+        self._update_room()  # the stamp follows the state
 
     def clear_result(self):
         self.outputs, self.attachments, self.out, self.sent_at = None, [], None, None
@@ -798,6 +828,7 @@ class MainWindow(QMainWindow):
     def generated(self, r):
         self.gen_btn.setEnabled(True)
         self.sent_at = None
+        self.filled_at = dt.datetime.now()
         self.status.setText(f"Saved in {r['out']}")
         self.out, self.outputs, self.attachments = r["out"], r["outputs"], r["attachments"]
         for i, d in enumerate(self.pack.documents):
