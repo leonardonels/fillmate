@@ -53,7 +53,7 @@ In **Settings → Form packs → New pack from PDF…**, pick your PDF:
   get a check mark.
 
 For everything else (Word templates, rules, email, presets) see
-[docs/pack-format.md](docs/pack-format.md). A pack is a folder like this:
+[docs/pack-format.md](https://github.com/leonardonels/fillmate/blob/main/docs/pack-format.md). A pack is a folder like this:
 
 ```
 my-pack/
@@ -62,7 +62,7 @@ my-pack/
   notice.docx
 ```
 
-The bundled [example pack](src/fillmate/examples/travel-request/pack.yaml) uses every
+The bundled [example pack](https://github.com/leonardonels/fillmate/blob/main/src/fillmate/examples/travel-request/pack.yaml) uses every
 feature.
 
 ## Command line
