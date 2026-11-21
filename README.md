@@ -28,7 +28,8 @@ fillmate                   # opens the app
 
 Or download an installer (`.deb`, `.rpm`, `.dmg`, `.msi`) from the
 [Releases](https://github.com/leonardonels/fillmate/releases) page. The `.deb` works on
-Ubuntu 22.04 and later (`sudo apt install ./fillmate_*_amd64.deb`). The macOS and Windows
+Ubuntu 22.04 and later (`sudo apt install ./fillmate_*_amd64.deb`). The `.dmg` is for
+Apple Silicon Macs (M1 and later); Intel Macs aren't supported. The macOS and Windows
 builds aren't signed yet. On macOS, right-click the app and choose **Open** the first
 time. On Windows, choose **More info → Run anyway**.
 
