@@ -30,15 +30,17 @@ LIGHT = {
     "glass": QColor(255, 255, 255, 51), "glass_reg": QColor(255, 255, 255, 30), "rim": QColor(255, 255, 255),
     "edge": QColor(0, 0, 0, 36), "shadow": QColor(30, 30, 20), "pill": QColor(255, 255, 255, 158),
     "switch_on": "#5a5852", "track": QColor(120, 120, 128, 51), "on_ink": "#ffffff",
-    "hover": QColor(255, 255, 255, 150),
+    "hover": QColor(255, 255, 255, 150), "pill_rim": 255, "sheen": 90,
 }
 DARK = {
-    "ink": "#aab9ff", "red": "#ff7a88", "hl": "#8a7400", "ground": "#17181b", "paper": "#232428",
-    "label": "#ecebe7", "label2": "#a7a59e", "rule": "#37383d", "dot": QColor(170, 185, 255, 34),
-    "glass": QColor(255, 255, 255, 22), "glass_reg": QColor(255, 255, 255, 14), "rim": QColor(255, 255, 255, 150),
-    "edge": QColor(255, 255, 255, 30), "shadow": QColor(0, 0, 0), "pill": QColor(255, 255, 255, 46),
+    # Dark glass carries a smoky tint, so it stays dark (and its light icons readable) even over the
+    # white page of a preview; rims and pills catch less light than on paper.
+    "ink": "#aab9ff", "red": "#ff7a88", "hl": "#e2c341", "ground": "#17181b", "paper": "#232428",
+    "label": "#ecebe7", "label2": "#a7a59e", "rule": "#3a3b41", "dot": QColor(170, 185, 255, 34),
+    "glass": QColor(34, 35, 40, 150), "glass_reg": QColor(30, 31, 36, 120), "rim": QColor(255, 255, 255, 95),
+    "edge": QColor(255, 255, 255, 26), "shadow": QColor(0, 0, 0), "pill": QColor(255, 255, 255, 40),
     "switch_on": "#8f8d86", "track": QColor(120, 120, 128, 90), "on_ink": "#101114",
-    "hover": QColor(255, 255, 255, 34),
+    "hover": QColor(255, 255, 255, 30), "pill_rim": 80, "sheen": 34,
 }
 T = dict(LIGHT)
 
@@ -111,7 +113,7 @@ def stylesheet():
     QLineEdit, QPlainTextEdit, QDateEdit, QTimeEdit, QSpinBox, QDoubleSpinBox, QComboBox[editable="true"] {{
         background: transparent; border: 0; border-bottom: 1px solid {t['rule']}; border-radius: 0;
         color: {t['ink']}; font-size: 15px; font-weight: 500; padding: 4px 0 5px 0;
-        selection-background-color: {t['hl']}; selection-color: {t['label']};
+        selection-background-color: {t['hl']}; selection-color: {LIGHT['label']};
     }}
     QLineEdit:focus, QPlainTextEdit:focus, QDateEdit:focus, QTimeEdit:focus, QSpinBox:focus,
     QDoubleSpinBox:focus, QComboBox[editable="true"]:focus {{ border-bottom: 2px solid {t['ink']}; padding-bottom: 4px; }}
@@ -148,7 +150,7 @@ def stylesheet():
     QListWidget::item {{ padding: 8px 10px; border-radius: 10px; }}
     QListWidget::item:hover {{ background: {hover_css()}; }}
     QListWidget::item:selected {{ background: rgba(120,120,128,0.16); color: {t['label']}; font-weight: 600; }}
-    QGroupBox {{ background: {t['paper']}; border: 1px solid rgba(0,0,0,0.05); border-radius: 16px;
+    QGroupBox {{ background: {t['paper']}; border: 1px solid {t['rule']}; border-radius: 16px;
         margin-top: 26px; padding: 14px 14px 12px 14px; }}
     QGroupBox::title {{ subcontrol-origin: margin; left: 6px; top: 2px; color: {t['label2']};
         font-size: 13px; font-weight: 600; }}
@@ -483,7 +485,7 @@ def paint_glass_skin(p, rect, radius, fill, tint=None):
         p.fillPath(path, QColor(tint))
     r = QRectF(rect)
     top = QLinearGradient(r.topLeft(), QPointF(r.left(), r.top() + min(14, r.height() / 2)))
-    top.setColorAt(0, QColor(255, 255, 255, 90 if not tint else 50))
+    top.setColorAt(0, QColor(255, 255, 255, T["sheen"] if not tint else 50))
     top.setColorAt(1, QColor(255, 255, 255, 0))
     p.fillPath(path, top)
     bottom = QLinearGradient(QPointF(r.left(), r.bottom() - min(12, r.height() / 2)), r.bottomLeft())
@@ -493,14 +495,15 @@ def paint_glass_skin(p, rect, radius, fill, tint=None):
     p.setPen(QPen(T["edge"], 0.6))
     p.drawPath(path)
     rim = QLinearGradient(r.topLeft(), r.bottomRight())
+    strength = T["rim"].alpha() / 255  # the dark theme's rim is fainter
     c = QColor(T["rim"])
-    c.setAlpha(240)
+    c.setAlpha(int(240 * strength))
     rim.setColorAt(0, c)
     c0 = QColor(T["rim"])
     c0.setAlpha(0)
     rim.setColorAt(0.26, c0)
     rim.setColorAt(0.7, c0)
-    c.setAlpha(190)
+    c.setAlpha(int(190 * strength))
     rim.setColorAt(1, c)
     p.setPen(QPen(QBrush(rim), 1.2))
     p.drawPath(glass_path(r.adjusted(0.8, 0.8, -0.8, -0.8), max(0, radius - 0.8)))
@@ -600,9 +603,9 @@ def paint_lens_pill(p, rect, radius=None):
     p.setPen(QPen(T["edge"], 0.6))
     p.drawPath(path)
     rim = QLinearGradient(r.topLeft(), r.bottomRight())
-    rim.setColorAt(0, QColor(255, 255, 255, 255))
+    rim.setColorAt(0, QColor(255, 255, 255, T["pill_rim"]))
     rim.setColorAt(0.35, QColor(255, 255, 255, 0))
-    rim.setColorAt(1, QColor(255, 255, 255, 200))
+    rim.setColorAt(1, QColor(255, 255, 255, int(T["pill_rim"] * 0.75)))
     p.setPen(QPen(QBrush(rim), 1.1))
     p.drawPath(glass_path(r.adjusted(0.7, 0.7, -0.7, -0.7), max(0, radius - 0.7)))
 
@@ -1297,7 +1300,7 @@ class MarginNote(QWidget):
 def highlight(text):
     """Highlighter behind a short piece of text (rich text for QLabel)."""
     import html
-    return (f'<span style="background-color:{T["hl"]}; color:{T["label"]};">'
+    return (f'<span style="background-color:{T["hl"]}; color:{LIGHT["label"]};">'
             f'&nbsp;{html.escape(text)}&nbsp;</span>')
 
 

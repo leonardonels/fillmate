@@ -26,4 +26,6 @@
   knobs slide, and the selection pill glides between options and fades in on the sidebar.
 - The output tabs stay between the title and the buttons: long document names are shortened (whole name on
   hover) instead of sliding under the toolbar buttons.
+- Dark theme: smoky glass that stays dark over the white page of a preview, fainter rims and selection pills,
+  a yellow highlighter with dark text, and visible edges around grouped settings.
 - Requires PySide6 below 6.12: 6.12 releases Python's None once too often on Python 3.10–3.11 and the app aborts.
