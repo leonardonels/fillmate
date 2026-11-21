@@ -1,4 +1,4 @@
-# Push a tag like v0.2.0 to build every installer and publish to PyPI:
+# Push a tag like v0.2.0 to build every installer (and publish to PyPI, when enabled below):
 #   git tag v0.2.0 && git push origin v0.2.0
 # The installers are attached to a draft GitHub Release: check them, then publish it.
 name: Release
@@ -34,8 +34,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {name: "Linux .deb (Ubuntu 24.04)", os: ubuntu-24.04, platform: linux, format: system,
-             target: "ubuntu:24.04", files: "dist/*.deb"}
           - {name: "Linux .rpm (Fedora 42)", os: ubuntu-24.04, platform: linux, format: system,
              target: "fedora:42", files: "dist/*.rpm"}
           - {name: "macOS .dmg", os: macos-latest, platform: macOS, format: app,
@@ -66,10 +64,25 @@ jobs:
           path: ${{ matrix.files }}
           if-no-files-found: error
 
+  deb:
+    # One self-contained .deb (it carries its own Python) for Ubuntu 22.04 and later.
+    name: Linux .deb (Ubuntu 22.04+)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: packaging/linux/build-deb.sh
+      - run: packaging/linux/test-deb.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-deb
+          path: dist/*.deb
+          if-no-files-found: error
+
   github-release:
     name: Draft GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [python-package, installers]
+    needs: [python-package, installers, deb]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -86,10 +99,12 @@ jobs:
 
   pypi:
     name: Publish to PyPI
-    # Needs a "trusted publisher" set up once on pypi.org for this repo and workflow,
-    # and a GitHub environment named "pypi". Remove this job if you don't publish there.
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [python-package, installers]
+    # Off until the repository variable PUBLISH_PYPI is set to "true"
+    # (Settings → Secrets and variables → Actions → Variables). It also needs a
+    # "trusted publisher" set up once on pypi.org for this repo and workflow,
+    # and a GitHub environment named "pypi".
+    if: startsWith(github.ref, 'refs/tags/v') && vars.PUBLISH_PYPI == 'true'
+    needs: [python-package, installers, deb]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
