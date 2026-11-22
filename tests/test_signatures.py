@@ -1,3 +1,4 @@
+import os
 import shutil
 import zipfile
 
@@ -59,7 +60,8 @@ def test_image_becomes_transparent_and_trimmed(tmp_path):
     original = pymupdf.Pixmap(str(src))
     assert pix.width < original.width * 0.75 and pix.height < original.height  # the margin is gone
     assert a[0, 0] == 0 and a[-1, -1] == 0 and a.max() == 255  # paper transparent, ink opaque
-    assert (sig.files[0].stat().st_mode & 0o777) == 0o600
+    if os.name == "posix":  # Windows has no owner-only permission bits
+        assert (sig.files[0].stat().st_mode & 0o777) == 0o600
     assert str(sig) == ""  # writes nothing in text templates
     assert make_env().from_string("[{{ s }}]").render(s=sig) == "[]"
 
