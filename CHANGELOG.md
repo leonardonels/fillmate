@@ -1,6 +1,12 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.1 (2026-11-22)
+
+- Dark theme: the drawer button's icon turns light with the rest of the toolbar.
+- README screenshots, taken from the demo with made-up data.
+- Published on PyPI: `pipx install fillmate`.
+
+## 0.1.0 (2026-11-22)
 
 - First version: form packs (`pack.yaml`), fills flat and fillable PDFs and DOCX (placeholders or table cells).
 - Desktop app with previews, presets, rules and warnings, test mode.

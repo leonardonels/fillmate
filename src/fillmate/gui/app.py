@@ -499,8 +499,8 @@ class MainWindow(QMainWindow):
     def apply_theme(self):
         self.dark = apply_theme(self.settings.get("theme", "auto"))
         self.send_btn.set_tint(T["ink"] if not self.sent_at else None)
-        self.tools.restyle()
-        self.zoom_bar.restyle()
+        for group in (self.tools, self.zoom_bar, self.side_toggle):
+            group.restyle()
         for note in (self.warning, self.test_banner):
             note.restyle()
         self.test_head.setStyleSheet(ink.hand_style(25, underline=True))
