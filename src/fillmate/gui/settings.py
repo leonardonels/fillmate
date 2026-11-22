@@ -110,6 +110,7 @@ class SettingsDialog(QDialog):
         self.frame = Frame(self, lambda w, pos: pos.y() < 64 and is_passive(w), dialog=True)
         if frame.PLATFORM == "linux":
             self.setStyleSheet("QDialog { background: transparent; }")
+        self.frame.mac_lights = (INSET + 22, INSET + 24)  # in the sidebar's corner, clear of its edge
         self.paper.radius = self.frame.radius
         page_area = QVBoxLayout(self.paper)
         page_area.setContentsMargins(SIDEBAR_W + 2 * INSET + 16, 18, 24, 18)

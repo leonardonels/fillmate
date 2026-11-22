@@ -378,7 +378,7 @@ class NewFieldDialog(QDialog):
         self.paper.radius = self.frame.radius
         outer.addWidget(self.paper)
         lay = QVBoxLayout(self.paper)
-        lay.setContentsMargins(24, 20, 24, 18)
+        lay.setContentsMargins(24, 20 + self.frame.mac_top(), 24, 18)
         lay.setSpacing(14)
         lay.addWidget(set_role(QLabel("New yes/no field" if yes_no else "New field"), "h1"))
         form = QFormLayout()
@@ -456,6 +456,7 @@ class CalibrateDialog(QDialog):
         self.frame = Frame(self, lambda w, pos: pos.y() < INSET + 52 and is_passive(w), dialog=True)
         if frame_mod.PLATFORM == "linux":
             self.setStyleSheet("QDialog { background: transparent; }")
+        self.frame.mac_lights = (INSET + 22, INSET + 14)  # on the toolbar row, before the title
         self.paper.radius = self.frame.radius
 
         self.view = PageView(self.paper)
@@ -643,7 +644,7 @@ class CalibrateDialog(QDialog):
         w, h = self.width(), self.height()
         self.paper.setGeometry(self.rect())
         self.panel.setGeometry(w - INSET - PANEL_W, INSET, PANEL_W, h - 2 * INSET)
-        left = INSET + 6
+        left = INSET + 6 + (72 if self.frame.mac_top() else 0)  # after a Mac's lights
         if self.win_left is not None:
             self.win_left.move(INSET + 4, INSET + 6)
             left = self.win_left.x() + self.win_left.width() + 12
