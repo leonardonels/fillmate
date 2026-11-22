@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Open fillmate with made-up data, separate from your real settings.
 
-Creates (once) a demo home with the example pack, a fictional profile and test mode on,
+Creates (once) a demo home with the example packs, a fictional profile and test mode on,
 then launches the app in it. Useful for trying things out and for screenshots.
 
     python tools/demo.py              # demo home in ./demo-home
@@ -23,7 +23,9 @@ def setup(home):
     from fillmate.pack import import_pack
     from fillmate.paths import examples_dir
 
-    import_pack(examples_dir() / "travel-request", store.packs_dir(), replace=True)
+    for folder in sorted(examples_dir().iterdir()):
+        if (folder / "pack.yaml").is_file():
+            import_pack(folder, store.packs_dir(), replace=True)
     store.save_profile({"full_name": "Alex Example", "employee_id": "E-1024", "department": "Engineering",
                         "manager_email": "manager@example.com"})
     s = store.load_settings()

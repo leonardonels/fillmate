@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Generate the templates of the bundled example pack (a made-up business travel request).
+"""Generate the templates of the bundled example packs (made-up company forms).
 
-The PDF is deliberately flat (no form fields) to show text positioning; the DOCX uses
-{{ placeholders }}. Run from the repo root: python tools/make_example_pack.py
+travel-request: a flat PDF (text by position) and a DOCX with {{ placeholders }}.
+timesheet: a ruled grid filled as a table, with per-page totals.
+Run from the repo root: python tools/make_example_pack.py
 """
 from pathlib import Path
 
@@ -10,7 +11,12 @@ import docx
 import pymupdf
 from docx.shared import Pt
 
-OUT = Path(__file__).resolve().parents[1] / "src" / "fillmate" / "examples" / "travel-request"
+EXAMPLES = Path(__file__).resolve().parents[1] / "src" / "fillmate" / "examples"
+OUT = EXAMPLES / "travel-request"
+TIMESHEET = EXAMPLES / "timesheet"
+# The timesheet grid: column edges, the header row, then GRID_ROWS rows of ROW_H points.
+GRID_XS = (40, 110, 160, 210, 260, 470, 555)
+GRID_TOP, HEADER_H, ROW_H, GRID_ROWS = 190, 24, 22, 20
 GREY = (0.35, 0.35, 0.35)
 
 
@@ -94,8 +100,50 @@ def make_docx(path):
     d.save(path)
 
 
+def make_timesheet(path):
+    pdf = pymupdf.open()
+    page = pdf.new_page(width=595, height=842)
+    page.insert_text((40, 80), "Monthly Timesheet", fontname="hebo", fontsize=20)
+    label(page, 40, 100, "Example Company Ltd. · Form TS-2 · one row per block of work")
+    label(page, 40, 140, "Employee")
+    rule(page, 110, 300, 140)
+    label(page, 320, 140, "Month")
+    rule(page, 365, 555, 140)
+    label(page, 40, 165, "Project")
+    rule(page, 110, 555, 165)
+
+    xs, bottom = GRID_XS, GRID_TOP + HEADER_H + ROW_H * GRID_ROWS
+    ink = (0.3, 0.3, 0.3)
+    page.draw_rect(pymupdf.Rect(xs[0], GRID_TOP, xs[-1], bottom), color=ink, width=0.8)
+    page.draw_rect(pymupdf.Rect(xs[0], GRID_TOP, xs[-1], GRID_TOP + HEADER_H), color=ink, fill=(0.93, 0.93, 0.93),
+                   width=0.8)
+    for x in xs[1:-1]:
+        page.draw_line((x, GRID_TOP), (x, bottom), color=ink, width=0.6)
+    for k in range(1, GRID_ROWS + 1):
+        y = GRID_TOP + HEADER_H + ROW_H * k
+        page.draw_line((xs[0], y), (xs[-1], y), color=ink, width=0.6)
+    for (x0, x1), name in zip(zip(xs, xs[1:]), ("Date", "From", "To", "Hours", "Activity", "Signature")):
+        w = pymupdf.get_text_length(name, fontname="hebo", fontsize=9)
+        page.insert_text(((x0 + x1 - w) / 2, GRID_TOP + 15), name, fontname="hebo", fontsize=9)
+
+    y = bottom + 30
+    label(page, 40, y, "Days on this sheet")
+    rule(page, 140, 200, y)
+    label(page, 230, y, "Hours on this sheet")
+    rule(page, 335, 395, y)
+    label(page, 430, y, "Sheet")
+    rule(page, 465, 555, y)
+    label(page, 40, y + 60, "Employee signature")
+    rule(page, 40, 250, y + 95)
+    label(page, 335, y + 60, "Supervisor")
+    rule(page, 335, 555, y + 95)
+    pdf.save(path, garbage=3, deflate=True)
+
+
 if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)
     make_pdf(OUT / "travel_request.pdf")
     make_docx(OUT / "travel_notice.docx")
-    print(f"written to {OUT}")
+    TIMESHEET.mkdir(parents=True, exist_ok=True)
+    make_timesheet(TIMESHEET / "timesheet.pdf")
+    print(f"written to {EXAMPLES}")

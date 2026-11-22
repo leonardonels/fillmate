@@ -4,7 +4,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QEventLoop, QPoint, QProcess, QRect, Qt, QUrl, Signal
+from PySide6.QtCore import QEventLoop, QPoint, QProcess, QRect, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QFontMetrics, QIcon, QKeySequence, QRegion, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
@@ -158,7 +158,11 @@ class MainWindow(QMainWindow):
         self.auth = GoogleAuth()
         self.settings = store.load_settings()
         self.packs, self.pack = [], None
-        self.inputs = {}
+        self.inputs, self.tables = {}, {}
+        self.draft_timer = QTimer(self)  # table rows are kept a moment after each edit
+        self.draft_timer.setSingleShot(True)
+        self.draft_timer.setInterval(500)
+        self.draft_timer.timeout.connect(self.save_draft)
         self.outputs, self.attachments, self.out = None, [], None
         self.dark = False
         self.sent_at = None
@@ -521,6 +525,9 @@ class MainWindow(QMainWindow):
         self.frame.after_show()
 
     def closeEvent(self, event):
+        if self.draft_timer.isActive():
+            self.draft_timer.stop()
+            self.save_draft()
         if self.scheme_monitor:
             self.scheme_monitor.kill()
             self.scheme_monitor.waitForFinished(1000)
@@ -649,6 +656,9 @@ class MainWindow(QMainWindow):
         return "DRAFT", f"{dt.date.today():%d %b %Y}"
 
     def pack_changed(self):
+        if self.draft_timer.isActive():  # keep the rows of the pack being left
+            self.draft_timer.stop()
+            self.save_draft()
         pid = self.pack_combo.currentData()
         self.pack = next((p for p in self.packs if p.id == pid), None)
         self.rebuild_packs()
@@ -656,7 +666,7 @@ class MainWindow(QMainWindow):
             w = self.form_holder.takeAt(0).widget()
             if w:
                 ink.discard(w)
-        self.inputs = {}
+        self.inputs, self.tables = {}, {}
         self.clear_result()
         has_pack = self.pack is not None
         for w in (self.save_preset_btn, self.gen_btn):
@@ -680,7 +690,13 @@ class MainWindow(QMainWindow):
             desc = label(self.pack.description, "muted", wrap=True)
             desc.setContentsMargins(6, 0, 6, 0)
             self.form_holder.addWidget(desc)
-        box, self.inputs = build_form(self.pack.fields, self.pack.date_format)
+        box, self.inputs = build_form(self.pack.fields, self.pack.date_format, self.pack)
+        self.tables = {fid: fi for fid, fi in self.inputs.items() if fi.field.type == "table"}
+        if self.tables:  # rows typed earlier (a timesheet is filled over a month)
+            draft = store.load_draft(self.pack.id)
+            for fid, fi in self.tables.items():
+                fi.set(draft.get(fid))
+                fi.widget.changed.connect(self.draft_timer.start)
         if self.inputs:  # a pack with nothing to ask gets no empty sheet
             sheet = Sheet()
             QVBoxLayout(sheet).addWidget(box)
@@ -719,7 +735,7 @@ class MainWindow(QMainWindow):
         for f in self.pack.fields:
             if f.id in values:
                 self.inputs[f.id].set(values[f.id])
-            elif name is not None and f.type not in ("dates", "date"):
+            elif name is not None and f.type not in ("dates", "date", "table"):
                 self.inputs[f.id].set(f.default)
 
     def save_preset(self):
@@ -730,8 +746,8 @@ class MainWindow(QMainWindow):
             return
         values = {}
         for fid, fi in self.inputs.items():
-            if fi.field.type in ("date", "dates"):
-                continue  # presets describe where/what, not when
+            if fi.field.type in ("date", "dates", "table"):
+                continue  # presets describe where/what, not when (tables are kept as a draft)
             values[fid] = fi.get()
         presets = store.load_user_presets(self.pack.id)
         presets[name] = values
@@ -745,6 +761,13 @@ class MainWindow(QMainWindow):
             del presets[name]
             store.save_user_presets(self.pack.id, presets)
             self.reload_presets()
+
+    def save_draft(self):
+        if self.pack is not None and getattr(self, "tables", None):
+            try:
+                store.save_draft(self.pack.id, {fid: fi.get() for fid, fi in self.tables.items()})
+            except (OSError, FillmateError) as e:
+                self.status.setText(f"Could not keep the table rows: {e}")
 
     def _remember_docx_pdf(self, on):
         self.settings["attach_docx_as_pdf"] = on

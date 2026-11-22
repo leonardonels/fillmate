@@ -63,6 +63,23 @@ def entry_to_yaml(entry):
     if "field" in entry:
         m["field"] = entry["field"]
         m["value"] = entry["value"]
+    elif "table" in entry:
+        m["table"] = entry["table"]
+        if entry.get("page", 0):
+            m["page"] = entry["page"]
+        m["xs"] = _flow([_round(v) for v in entry["xs"]])
+        m["ys"] = _flow([_round(v) for v in entry["ys"]])
+        m["cols"] = _flow([c if c else None for c in entry["cols"]])
+        if entry.get("align"):
+            m["align"] = _flow(list(entry["align"]))
+        if entry.get("overflow", "repeat_page") != "repeat_page":
+            m["overflow"] = entry["overflow"]
+        if float(entry.get("size", 9)) != 9:
+            m["size"] = _round(entry["size"])
+        if float(entry.get("min_size", 6)) != 6:
+            m["min_size"] = _round(entry["min_size"])
+        if entry.get("font", "helv") != "helv":
+            m["font"] = entry["font"]
     elif "mark" in entry:
         m["mark"] = entry["mark"]
         if entry.get("page", 0):
@@ -96,13 +113,37 @@ def set_document_fill(root, doc_id, entries):
     raise PackError(f"No document '{doc_id}' in the pack.")
 
 
-def save_positions(root, doc_id, entries, new_fields=()):
+def column_to_yaml(c):
+    """A table column (a dict with id, label, type, formula…) as one flow-style line."""
+    m = CommentedMap(id=c["id"], label=c.get("label") or c["id"])
+    if c.get("formula"):
+        m["formula"] = c["formula"]
+    elif c.get("type", "text") != "text":
+        m["type"] = c["type"]
+    for key in ("format", "default", "placeholder", "help"):
+        if c.get(key) not in (None, ""):
+            m[key] = c[key]
+    if c.get("options"):
+        m["options"] = _flow(list(c["options"]))
+    if c.get("required"):
+        m["required"] = True
+    m.fa.set_flow_style()
+    return m
+
+
+def save_positions(root, doc_id, entries, new_fields=(), table_columns=None):
     """Save a document's fill entries together with the fields created while placing them.
 
-    One write: nothing reaches pack.yaml until the person saves, so leaving the editor
-    without saving never leaves half-made fields behind.
+    table_columns ({table field id: [column dicts]}) replaces the columns of tables whose
+    columns were edited here. One write: nothing reaches pack.yaml until the person saves,
+    so leaving the editor without saving never leaves half-made fields behind.
     """
     spec = read_spec(root)
+    table_columns = dict(table_columns or {})
+    for sec in ("profile", "fields"):
+        for f in spec.get(sec) or []:
+            if f.get("id") in table_columns:
+                f["columns"] = CommentedSeq(column_to_yaml(c) for c in table_columns.pop(f.get("id")))
     existing = {f.get("id") for sec in ("profile", "fields") for f in spec.get(sec) or []}
     for nf in new_fields:
         if nf["id"] in existing:
@@ -117,7 +158,10 @@ def save_positions(root, doc_id, entries, new_fields=()):
             m["type"] = nf["type"]
         if nf.get("options"):
             m["options"] = _flow(list(nf["options"]))
-        m.fa.set_flow_style()
+        if nf.get("type") == "table":  # a table: one column per line underneath
+            m["columns"] = CommentedSeq(column_to_yaml(c) for c in table_columns.pop(nf["id"], nf.get("columns", [])))
+        else:
+            m.fa.set_flow_style()
         spec[section].append(m)
         existing.add(nf["id"])
     for doc in spec.get("documents") or []:
@@ -366,6 +410,125 @@ def create_pack_from_pdf(pdf_path, packs_dir, name):
     except PackError:
         shutil.rmtree(root, ignore_errors=True)
         raise
+
+
+# --- tables ------------------------------------------------------------------
+
+def detect_grids(pdf_path, page_no):
+    """Every ruled grid on a page, largest first: {"bbox", "xs", "ys", "headers"}.
+
+    xs are column edges and ys the edges of the rows to fill; rows at the top that already
+    have text are the header, left out of ys, and their text is in "headers".
+    """
+    with pymupdf.open(pdf_path) as pdf:
+        page = pdf[page_no]
+        try:
+            found = page.find_tables().tables
+        except Exception:
+            return []
+        out = []
+        for table in found:
+            texts = table.extract()
+            widest = max(table.rows, key=lambda r: sum(c is not None for c in r.cells))
+            cells = [c for c in widest.cells if c is not None]
+            xs = [cells[0][0]] + [c[2] for c in cells]
+            edges = [r.bbox[1] for r in table.rows] + [table.rows[-1].bbox[3]]
+            header = 0
+            while header < len(texts) - 1 and any((t or "").strip() for t in texts[header]):
+                header += 1
+            if len(xs) < 2 or len(edges) - header < 2:
+                continue
+            names = [""] * (len(xs) - 1)
+            for row in texts[:header]:
+                for j, t in enumerate(row[:len(names)]):
+                    if t and t.strip():
+                        names[j] = " ".join(f"{names[j]} {t}".split())
+            out.append({"bbox": tuple(round(v, 1) for v in table.bbox), "xs": [round(x, 1) for x in xs],
+                        "ys": [round(y, 1) for y in edges[header:]], "headers": names})
+    out.sort(key=lambda g: -(g["bbox"][2] - g["bbox"][0]) * (g["bbox"][3] - g["bbox"][1]))
+    return out
+
+
+def pick_grid(grids, rect=None, at=None):
+    """The grid around point `at`, or the one overlapping rect the most (at least half of it)."""
+    if at is not None:
+        x, y = at
+        return next((g for g in grids if g["bbox"][0] <= x <= g["bbox"][2] and g["bbox"][1] <= y <= g["bbox"][3]),
+                    None)
+    if rect is None:
+        return grids[0] if grids else None
+    best, best_area = None, 0.0
+    for g in grids:
+        r = pymupdf.Rect(g["bbox"]) & pymupdf.Rect(*rect)
+        area = 0.0 if r.is_empty else r.get_area()
+        if area > best_area:
+            best, best_area = g, area
+    grid_area = pymupdf.Rect(best["bbox"]).get_area() if best else 0
+    return best if best and best_area >= 0.5 * min(grid_area, pymupdf.Rect(*rect).get_area()) else None
+
+
+def detect_grid(pdf_path, page_no, rect=None, at=None):
+    """The ruled grid inside rect (x0, y0, x1, y1), or around point `at`, or None. See detect_grids."""
+    return pick_grid(detect_grids(pdf_path, page_no), rect, at)
+
+
+KIND_WORDS = {  # header words (several languages) -> what the column probably holds
+    "skip": ("signature", "sign", "firma", "unterschrift", "visto", "visa", "signé"),
+    "date": ("date", "data", "day", "giorno", "datum", "tag", "jour", "fecha", "día", "dia"),
+    "start": ("from", "start", "dalle", "inizio", "entrata", "ingresso", "von", "beginn", "début", "desde",
+              "entrada"),
+    "end": ("to", "end", "alle", "fine", "uscita", "bis", "ende", "fin", "hasta", "salida"),
+    "hours": ("hours", "ore", "hrs", "total", "totale", "stunden", "heures", "horas", "durata", "duration"),
+}
+SHORT_WORDS = {"in": "start", "out": "end", "h": "hours"}  # only when they are the whole header
+# Names a formula cannot use for a column (Jinja operators and values, and what fillmate adds)
+RESERVED = {"and", "or", "not", "in", "is", "if", "else", "true", "false", "none", "loop", "sheet", "today"}
+
+
+def _kind_of(header):
+    words = re.findall(r"[^\W\d_]+", header.lower())
+    if len(words) == 1 and words[0] in SHORT_WORDS:
+        return SHORT_WORDS[words[0]]
+    if len(words) > 3:  # a sentence ("Argomento trattato in Azienda") is text, whatever words it has
+        return "skip" if any(w in KIND_WORDS["skip"] for w in words) else "text"
+    for kind in ("skip", "date", "hours", "start", "end"):
+        if any(w in KIND_WORDS[kind] for w in words):
+            return kind
+    return "text"
+
+
+def guess_columns(headers, used=()):
+    """Columns for a new table from its header texts: (columns, cols for the grid entry).
+
+    Dates and times are recognised by name; an hours column between two times gets the
+    formula hours_between(start, end); a signature column is left empty.
+    """
+    used = set(used) | RESERVED
+    columns, cols, kinds = [], [], [_kind_of(h) for h in headers]
+    for j, (header, kind) in enumerate(zip(headers, kinds)):
+        if kind == "skip":
+            cols.append(None)
+            continue
+        name = header.strip() or f"Column {j + 1}"
+        cid = _field_id(" ".join(name.split()[:3]), used)
+        c = {"id": cid, "label": name[:1].upper() + name[1:], "type": "text"}
+        if kind == "date":
+            c["type"] = "date"
+        elif kind in ("start", "end"):
+            c["type"] = "time"
+        c["kind"] = kind
+        columns.append(c)
+        cols.append(cid)
+    starts = [c["id"] for c in columns if c["kind"] == "start"]
+    ends = [c["id"] for c in columns if c["kind"] == "end"]
+    for c in columns:
+        if c.pop("kind") == "hours":
+            if starts and ends:
+                c["formula"] = f"hours_between({starts[0]}, {ends[0]})"
+                c.pop("type")
+            else:
+                c["type"] = "number"
+    return columns, cols
 
 
 # --- sample rendering ------------------------------------------------------

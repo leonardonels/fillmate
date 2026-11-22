@@ -56,6 +56,11 @@ def cmd_fields(args, settings):
         extra = f" [{', '.join(f.options)}]" if f.options else ""
         default = f"  default: {f.default}" if f.default not in (None, "") else ""
         print(f" {mark}{f.id:<22} {f.type:<9} {f.label}{extra}{default}")
+        for c in f.columns:
+            kind = f"= {c.formula}" if c.formula else c.type
+            print(f"   {'':<2}{c.id:<20} {kind:<9} {c.label}")
+        if f.type == "table":
+            print(f"   (--set {f.id}=@rows.csv, with a header row naming the columns)")
     presets = {**pack.presets, **store.load_user_presets(pack.id)}
     if presets:
         print(f"\nPresets (--preset): {', '.join(presets)}")
@@ -78,7 +83,23 @@ def cmd_fill(args, settings):
         if args.preset not in presets:
             raise FillmateError(f"Unknown preset '{args.preset}'. Available: {', '.join(presets) or 'none'}.")
         preset = presets[args.preset]
-    ctx = engine.build_context(pack, store.load_profile(), _pairs(args.set, "--set"), preset)
+    values = _pairs(args.set, "--set")
+    draft = store.load_draft(pack.id)
+    for f in pack.fields:
+        if f.type != "table":
+            continue
+        value = values.get(f.id)
+        if isinstance(value, str) and value.startswith("@"):
+            path = Path(value[1:]).expanduser()
+            try:
+                values[f.id] = engine.rows_from_csv(f, path.read_text(encoding="utf-8-sig"))
+            except OSError as e:
+                raise FillmateError(f"Cannot read {path}: {e.strerror}.") from e
+        elif value is None:
+            values[f.id] = draft.get(f.id)  # the rows typed in the app
+        else:
+            raise FillmateError(f"{f.id} is a table: use --set {f.id}=@rows.csv")
+    ctx = engine.build_context(pack, store.load_profile(), values, preset)
     for w in ctx.warnings:
         print(f"WARNING: {w}", file=sys.stderr)
     out = args.out or engine.output_folder(ctx, store.output_dir(settings))

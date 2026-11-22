@@ -18,10 +18,27 @@ from .templating import make_env
 
 SPEC_FILE = "pack.yaml"
 SPEC_VERSION = 1
-FIELD_TYPES = {"text", "multiline", "date", "dates", "time", "bool", "choice"}
+FIELD_TYPES = {"text", "multiline", "date", "dates", "time", "bool", "choice", "table"}
+COLUMN_TYPES = {"text", "date", "time", "number", "choice"}
+ALIGNS = {"left", "center", "right"}
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 MAX_ZIP_BYTES = 100 * 1024 * 1024
+
+
+@dataclass
+class Column:
+    """One column of a table field: typed in by the person, or computed by a formula."""
+    id: str
+    label: str
+    type: str = "text"
+    default: object = None
+    options: list = field(default_factory=list)
+    formula: str = ""   # a Jinja expression over the row's other columns; empty = typed in
+    format: str = ""    # date columns: strftime format (default: the pack's date_format)
+    required: bool = False
+    placeholder: str = ""
+    help: str = ""
 
 
 @dataclass
@@ -34,6 +51,10 @@ class Field:
     placeholder: str = ""
     help: str = ""
     options: list = field(default_factory=list)
+    columns: list = field(default_factory=list)  # table fields only
+
+    def column(self, column_id):
+        return next((c for c in self.columns if c.id == column_id), None)
 
 
 @dataclass
@@ -123,13 +144,56 @@ def _fields(items, where, seen):
         options = [str(o) for o in _list(raw.get("options"), f"{w}.options")]
         if ftype == "choice" and not options:
             raise PackError(f"{w} is a choice field without options.")
+        columns = _columns(raw.get("columns"), f"{w}.columns") if ftype == "table" else []
+        if ftype != "table" and raw.get("columns") is not None:
+            raise PackError(f"{w}: only table fields have columns.")
         out.append(Field(
             id=fid, label=_str(raw.get("label"), f"{w}.label", fid), type=ftype,
             default=raw.get("default"), required=bool(raw.get("required", False)),
             placeholder=_str(raw.get("placeholder"), f"{w}.placeholder", ""),
-            help=_str(raw.get("help"), f"{w}.help", ""), options=options,
+            help=_str(raw.get("help"), f"{w}.help", ""), options=options, columns=columns,
         ))
     return out
+
+
+def _columns(items, where):
+    items = _list(items, where)
+    if not items:
+        raise PackError(f"{where}: a table needs at least one column.")
+    out, seen = [], set()
+    for i, raw in enumerate(items):
+        w = f"{where}[{i}]"
+        raw = _dict(raw, w)
+        cid = _str(raw.get("id"), f"{w}.id")
+        if not NAME_RE.match(cid):
+            raise PackError(f"{w}.id '{cid}' must be letters, digits or _ and not start with a digit.")
+        if cid in seen:
+            raise PackError(f"{where}: column id '{cid}' is used twice.")
+        seen.add(cid)
+        ctype = _str(raw.get("type"), f"{w}.type", "text")
+        if ctype not in COLUMN_TYPES:
+            raise PackError(f"{w}.type '{ctype}' is not one of {', '.join(sorted(COLUMN_TYPES))}.")
+        options = [str(o) for o in _list(raw.get("options"), f"{w}.options")]
+        if ctype == "choice" and not options:
+            raise PackError(f"{w} is a choice column without options.")
+        out.append(Column(
+            id=cid, label=_str(raw.get("label"), f"{w}.label", cid), type=ctype, default=raw.get("default"),
+            options=options, formula=_str(raw.get("formula"), f"{w}.formula", ""),
+            format=_str(raw.get("format"), f"{w}.format", ""), required=bool(raw.get("required", False)),
+            placeholder=_str(raw.get("placeholder"), f"{w}.placeholder", ""),
+            help=_str(raw.get("help"), f"{w}.help", ""),
+        ))
+    return out
+
+
+def _edges(value, where):
+    if (not isinstance(value, list) or len(value) < 2
+            or not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value)):
+        raise PackError(f"{where} must be a list of at least 2 numbers.")
+    value = [float(v) for v in value]
+    if any(b <= a for a, b in zip(value, value[1:])):
+        raise PackError(f"{where} must be increasing.")
+    return value
 
 
 def _numbers(value, n, where):
@@ -146,6 +210,22 @@ def _pdf_entry(raw, w):
         raise PackError(f"{w}.page must be a page number starting from 0.")
     if "field" in raw:
         return {"field": _str(raw["field"], f"{w}.field"), "value": _str(raw.get("value"), f"{w}.value")}
+    if "table" in raw:
+        xs, ys = _edges(raw.get("xs"), f"{w}.xs"), _edges(raw.get("ys"), f"{w}.ys")
+        cols = _list(raw.get("cols"), f"{w}.cols")
+        if len(cols) != len(xs) - 1:
+            raise PackError(f"{w}.cols needs one entry per grid column ({len(xs) - 1}); use ~ to leave one empty.")
+        cols = [None if c in (None, "") else _str(c, f"{w}.cols") for c in cols]
+        align = _list(raw.get("align"), f"{w}.align")
+        if align and (len(align) != len(cols) or any(a not in ALIGNS for a in align)):
+            raise PackError(f"{w}.align needs one of left/center/right per grid column.")
+        overflow = _str(raw.get("overflow"), f"{w}.overflow", "repeat_page")
+        if overflow not in ("repeat_page", "error"):
+            raise PackError(f"{w}.overflow must be repeat_page or error.")
+        return {"table": _str(raw["table"], f"{w}.table"), "page": page, "xs": xs, "ys": ys, "cols": cols,
+                "align": [str(a) for a in align], "overflow": overflow,
+                "font": _str(raw.get("font"), f"{w}.font", "helv"),
+                "size": float(raw.get("size", 9)), "min_size": float(raw.get("min_size", 6))}
     if "mark" in raw:
         return {"mark": _str(raw["mark"], f"{w}.mark"), "page": page,
                 "at": _numbers(raw.get("at"), 2, f"{w}.at"),
@@ -153,7 +233,8 @@ def _pdf_entry(raw, w):
                 "size": float(raw.get("size", 11))}
     lines = _list(raw.get("lines"), f"{w}.lines")
     if not lines:
-        raise PackError(f"{w} needs 'lines' (text), 'field' (fillable PDF field) or 'mark' (check mark).")
+        raise PackError(f"{w} needs 'lines' (text), 'field' (fillable PDF field), 'mark' (check mark) "
+                        "or 'table' (a grid).")
     return {"value": _str(raw.get("value"), f"{w}.value"), "page": page,
             "lines": [_numbers(line, 3, f"{w}.lines[{j}]") for j, line in enumerate(lines)],
             "font": _str(raw.get("font"), f"{w}.font", "helv"),
@@ -171,6 +252,25 @@ def _docx_entry(raw, w):
         if entry[key] is not None and (not isinstance(entry[key], int) or entry[key] < 0):
             raise PackError(f"{w}.{key} must be a number starting from 0.")
     return entry
+
+
+def _check_tables(fill, fields, where):
+    tables = {f.id: f for f in fields if f.type == "table"}
+    repeating = 0
+    for j, e in enumerate(fill):
+        if "table" not in e:
+            continue
+        w = f"{where}.fill[{j}]"
+        f = tables.get(e["table"])
+        if f is None:
+            raise PackError(f"{w}.table: '{e['table']}' is not a table field.")
+        unknown = [c for c in e["cols"] if c is not None and f.column(c) is None]
+        if unknown:
+            raise PackError(f"{w}.cols: {', '.join(unknown)} not a column of '{f.id}'.")
+        repeating += e["overflow"] == "repeat_page"
+    if repeating > 1:
+        raise PackError(f"{where}: only one table per document can repeat its page; "
+                        "set overflow: error on the others.")
 
 
 def _inside(root, rel, where):
@@ -199,6 +299,8 @@ def load_pack(root) -> Pack:
 
     seen = set()
     profile = _fields(raw.get("profile"), "profile", seen)
+    if any(f.type == "table" for f in profile):
+        raise PackError("profile: tables belong in fields, not in the profile.")
     fields = _fields(raw.get("fields"), "fields", seen)
 
     computed = {}
@@ -231,6 +333,7 @@ def load_pack(root) -> Pack:
             raise PackError(f"{w}.template must be a .pdf or .docx file.")
         parse = _pdf_entry if kind == ".pdf" else _docx_entry
         fill = [parse(e, f"{w}.fill[{j}]") for j, e in enumerate(_list(d.get("fill"), f"{w}.fill"))]
+        _check_tables(fill, fields, w)
         placeholders = bool(d.get("placeholders", False))
         if placeholders and kind != ".docx":
             raise PackError(f"{w}: 'placeholders' only works with .docx templates.")
@@ -283,11 +386,17 @@ def _check_templates(pack):
 
     for key, value in pack.computed.items():
         check(value, f"computed.{key}")
+    for f in pack.fields + pack.profile:
+        for c in f.columns:
+            if c.formula:
+                check(c.formula, f"{f.id}.columns.{c.id}.formula", expression=True)
     for d in pack.documents:
         check(d.output, f"documents.{d.id}.output")
         for j, e in enumerate(d.fill):
             if "mark" in e:
                 check(e["mark"], f"documents.{d.id}.fill[{j}].mark", expression=True)
+            elif "table" in e:
+                pass
             else:
                 check(e["value"], f"documents.{d.id}.fill[{j}].value")
     for key in ("subject", "body"):

@@ -105,7 +105,10 @@ def stylesheet():
     QScrollArea, QScrollArea > QWidget > QWidget, QStackedWidget {{ background: transparent; border: 0; }}
     QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
     QScrollBar::handle:vertical {{ background: rgba(120,120,128,0.35); border-radius: 3px; min-height: 30px; }}
-    QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {{ height: 0; background: none; }}
+    QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 2px; }}
+    QScrollBar::handle:horizontal {{ background: rgba(120,120,128,0.35); border-radius: 3px; min-width: 30px; }}
+    QScrollBar::add-line, QScrollBar::sub-line, QScrollBar::add-page, QScrollBar::sub-page {{ height: 0; width: 0;
+        background: none; }}
     QLabel[role="lbl"] {{ color: {t['label2']}; font-size: 12px; font-weight: 500; }}
     QLabel[role="muted"] {{ color: {t['label2']}; font-size: 13px; }}
     QLabel[role="sec"] {{ color: {t['label2']}; font-size: 13px; font-weight: 600; padding: 0 6px; }}
@@ -127,6 +130,11 @@ def stylesheet():
     QComboBox {{ background: {t['paper']}; border: 1px solid rgba(120,120,128,0.35); border-radius: 10px;
         padding: 5px 12px; min-height: 22px; }}
     QComboBox::drop-down {{ border: 0; width: 22px; }}
+    /* a drop-down that sits among underlined fields: written on the line, like them */
+    QComboBox[role="line"] {{ background: transparent; border: 0; border-bottom: 1px solid {t['rule']};
+        border-radius: 0; color: {t['ink']}; font-size: 15px; font-weight: 500; padding: 4px 0 5px 0; }}
+    QComboBox[role="line"]:focus {{ border-bottom: 2px solid {t['ink']}; padding-bottom: 4px; }}
+    QLabel[role="sec"][flush="true"] {{ padding: 0; }}
     QComboBox QAbstractItemView {{ background: {t['paper']}; border: 1px solid {t['rule']}; border-radius: 8px;
         selection-background-color: rgba(120,120,128,0.18); selection-color: {t['label']}; padding: 4px; }}
     QPushButton {{ background: rgba(255,255,255,{'0.55' if light else '0.06'}); border: 1px solid rgba(120,120,128,0.38);
@@ -155,6 +163,15 @@ def stylesheet():
     QListWidget::item {{ padding: 8px 10px; border-radius: 10px; }}
     QListWidget::item:hover {{ background: {hover_css()}; }}
     QListWidget::item:selected {{ background: rgba(120,120,128,0.16); color: {t['label']}; font-weight: 600; }}
+    QTableView {{ background: {t['paper']}; border: 1px solid rgba(0,0,0,0.06); border-radius: 12px;
+        gridline-color: {t['rule']}; color: {t['ink']}; font-size: 14px; outline: 0;
+        selection-background-color: rgba(120,120,128,0.16); selection-color: {t['ink']}; }}
+    QTableView QLineEdit {{ border: 0; padding: 0 4px; background: {t['paper']}; font-size: 14px; }}
+    QHeaderView {{ background: transparent; }}
+    QHeaderView::section {{ background: transparent; color: {t['label2']}; font-size: 12px; font-weight: 600;
+        border: 0; border-bottom: 1px solid {t['rule']}; padding: 4px 4px; }}
+    QHeaderView::section:vertical {{ border-bottom: 0; border-right: 1px solid {t['rule']}; font-weight: 500; }}
+    QTableCornerButton::section {{ background: transparent; border: 0; }}
     QGroupBox {{ background: {t['paper']}; border: 1px solid {t['rule']}; border-radius: 16px;
         margin-top: 26px; padding: 14px 14px 12px 14px; }}
     QGroupBox::title {{ subcontrol-origin: margin; left: 6px; top: 2px; color: {t['label2']};
@@ -501,6 +518,14 @@ def _icon_path(name):
         p.addRoundedRect(QRectF(3, 7, 18, 10), 2, 2)
         p.moveTo(8, 12)
         p.lineTo(16, 12)
+    elif name == "grid":
+        p.addRoundedRect(QRectF(3, 5, 18, 14), 2, 2)
+        for x in (9, 15):
+            p.moveTo(x, 5)
+            p.lineTo(x, 19)
+        for y in (9.7, 14.3):
+            p.moveTo(3, y)
+            p.lineTo(21, y)
     elif name == "check":
         p.moveTo(5, 12)
         p.lineTo(10, 17)
