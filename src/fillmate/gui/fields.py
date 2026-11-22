@@ -97,11 +97,18 @@ class DateList(QWidget):
 class FieldInput:
     """A widget for one pack field, with get/set of its value."""
 
-    def __init__(self, f, date_format):
+    def __init__(self, f, date_format, pack=None):
         self.field = f
         display = qt_date_format(date_format)
         t = f.type
-        if t == "dates":
+        if t == "table":
+            from .table import TableInput  # imports this module: loaded only when a pack has a table
+            self.widget = TableInput(f, pack)
+        elif t == "signature":
+            from .signatures_ui import SignaturePicker
+            self.widget = SignaturePicker()
+            self.widget.setAccessibleName(f.label)
+        elif t == "dates":
             self.widget = DateList(display)
         elif t == "date":
             self.widget = date_edit(f.default, display)
@@ -137,6 +144,8 @@ class FieldInput:
 
     def get(self):
         w, t = self.widget, self.field.type
+        if t in ("table", "signature"):
+            return w.get()
         if t == "dates":
             return w.dates()
         if t == "date":
@@ -153,7 +162,9 @@ class FieldInput:
 
     def set(self, value):
         w, t = self.widget, self.field.type
-        if t == "dates":
+        if t in ("table", "signature"):
+            w.set(value)
+        elif t == "dates":
             if value:
                 w.set_dates(value if isinstance(value, list) else str(value).split(","))
         elif t == "date":
@@ -177,7 +188,7 @@ class FieldInput:
             w.setCursorPosition(0)
 
 
-def build_form(fields, date_format):
+def build_form(fields, date_format, pack=None):
     """The fields as rows (small label above the value; yes/no beside it) and their FieldInputs."""
     box = QWidget()
     lay = QVBoxLayout(box)
@@ -185,7 +196,7 @@ def build_form(fields, date_format):
     lay.setSpacing(12)
     inputs = {}
     for f in fields:
-        fi = FieldInput(f, date_format)
+        fi = FieldInput(f, date_format, pack)
         name = label(fi.row_label)  # plain text: labels come from the pack
         if f.type == "bool":
             name.setStyleSheet("font-size: 15px;")

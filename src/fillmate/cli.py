@@ -3,7 +3,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from . import FillmateError, __version__, engine, mail, store
+from . import FillmateError, __version__, engine, fills, mail, store
 from .fill_docx import docx_to_pdf
 from .mail.mailapp import open_draft
 from .mail.senders import make_sender
@@ -56,6 +56,11 @@ def cmd_fields(args, settings):
         extra = f" [{', '.join(f.options)}]" if f.options else ""
         default = f"  default: {f.default}" if f.default not in (None, "") else ""
         print(f" {mark}{f.id:<22} {f.type:<9} {f.label}{extra}{default}")
+        for c in f.columns:
+            kind = f"= {c.formula}" if c.formula else c.type
+            print(f"   {'':<2}{c.id:<20} {kind:<9} {c.label}")
+        if f.type == "table":
+            print(f"   (--set {f.id}=@rows.csv, with a header row naming the columns)")
     presets = {**pack.presets, **store.load_user_presets(pack.id)}
     if presets:
         print(f"\nPresets (--preset): {', '.join(presets)}")
@@ -78,11 +83,37 @@ def cmd_fill(args, settings):
         if args.preset not in presets:
             raise FillmateError(f"Unknown preset '{args.preset}'. Available: {', '.join(presets) or 'none'}.")
         preset = presets[args.preset]
-    ctx = engine.build_context(pack, store.load_profile(), _pairs(args.set, "--set"), preset)
+    values = {}
+    if args.from_file:  # a saved form: its values first, --set on top
+        saved = fills.load_fill(Path(args.from_file).expanduser())
+        values = fills.for_pack(saved, pack)
+        if preset is None and saved["preset"] in presets:
+            preset, args.preset = presets[saved["preset"]], saved["preset"]
+    values.update(_pairs(args.set, "--set"))
+    draft = store.load_draft(pack.id)
+    for f in pack.fields:
+        if f.type != "table":
+            continue
+        value = values.get(f.id)
+        if isinstance(value, str) and value.startswith("@"):
+            path = Path(value[1:]).expanduser()
+            try:
+                values[f.id] = engine.rows_from_csv(f, path.read_text(encoding="utf-8-sig"))
+            except OSError as e:
+                raise FillmateError(f"Cannot read {path}: {e.strerror}.") from e
+        elif value is None:
+            values[f.id] = draft.get(f.id)  # the rows typed in the app
+        elif isinstance(value, list):
+            pass  # rows from a saved form
+        else:
+            raise FillmateError(f"{f.id} is a table: use --set {f.id}=@rows.csv")
+    ctx = engine.build_context(pack, store.load_profile(), values, preset)
     for w in ctx.warnings:
         print(f"WARNING: {w}", file=sys.stderr)
     out = args.out or engine.output_folder(ctx, store.output_dir(settings))
     outputs = engine.generate(ctx, out)
+    saved = fills.save_fill(Path(out) / f"{pack.id}{fills.SUFFIX}", pack, values, args.preset)
+    print(f"saved form: {saved}  (fillmate fill {pack.id} --from it, to change it later)")
     attachments = [o.path for o in outputs]
     if args.docx_pdf:
         attachments += [docx_to_pdf(o.path) for o in outputs if o.kind == "docx"]
@@ -142,6 +173,8 @@ def build_parser():
     p = sub.add_parser("fill", help="fill a pack's documents and optionally email them")
     p.add_argument("pack", help="pack id (or path to a pack folder)")
     p.add_argument("--preset")
+    p.add_argument("--from", dest="from_file", metavar="FILE.fillmate",
+                   help="start from a saved form (created next to the documents, or with Save as… in the app)")
     p.add_argument("--set", action="append", metavar="ID=VALUE",
                    help="field value; dates fields take a comma-separated list")
     p.add_argument("--out", type=Path, help="output folder")

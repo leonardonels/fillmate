@@ -487,6 +487,10 @@ class SettingsDialog(QDialog):
                        "never included when you export a pack.")
         intro.setWordWrap(True)
         self.profile_layout.addWidget(intro)
+        from .signatures_ui import SignaturesBox
+        self.signatures_box = SignaturesBox()
+        self.signatures_box.changed.connect(self._signatures_changed)
+        self.profile_layout.addWidget(self.signatures_box)
         fields, seen = [], set()
         for p in packs:
             for f in p.profile:
@@ -505,6 +509,12 @@ class SettingsDialog(QDialog):
             self.profile_layout.addWidget(box)
         self.profile_layout.addStretch()
         self.watch(self.profile_tab)
+
+    def _signatures_changed(self):
+        for fi in getattr(self, "profile_inputs", {}).values():
+            if fi.field.type == "signature":
+                fi.widget.refresh()
+        self.changed.emit(False)
 
     # --- packs ---
 

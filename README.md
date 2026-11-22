@@ -14,6 +14,13 @@ documents by email.
   wrapped across lines, and shrunk to fit.
 - **Word documents**: `{{ placeholders }}`, or writing into table cells while the
   template's formatting stays as it is.
+- **Tables**: timesheets and other ruled grids. Type the rows in a small spreadsheet with a
+  fill handle. Hours and totals are computed, and extra rows go on a repeated page with its
+  own totals.
+- **Signatures**: add yours from a photo, a scan or a PDF and place it on forms and in each
+  row of a table. It stays on your computer and is never shared with a pack.
+- **Saved forms**: what you typed is kept next to the documents. Open it again to change
+  something or start next month from it, or save it as a file to hand over.
 - **Email**: Gmail (sign in with Google, no password stored), any SMTP server, or a draft
   opened in your own mail app.
 - **Safety**: a test mode sends only to your own addresses, and a confirmation before
@@ -47,7 +54,7 @@ Anyway** (once). On Windows, choose **More info → Run anyway**.
 
 ## First steps
 
-1. **Settings → Form packs → Install example** gives you a demo pack. Or import a pack
+1. **Settings → Form packs → Install example** gives you two demo packs. Or import a pack
    someone shared with you.
 2. **Settings → Profile**: your name and the other details packs reuse.
 3. **Settings → Email**: choose how to send. For Gmail, the tab has a short guide to
@@ -65,6 +72,8 @@ In **Settings → Form packs → New pack from PDF…**, pick your PDF:
 - If it has fillable fields, they become pack fields right away.
 - If it's a flat PDF, draw a box over each blank line and click the boxes that should
   get a check mark.
+- For a table, drag over it: fillmate snaps to its lines and guesses the columns (dates,
+  times, hours) from the header.
 
 For everything else (Word templates, rules, email, presets) see
 [docs/pack-format.md](https://github.com/leonardonels/fillmate/blob/main/docs/pack-format.md). A pack is a folder like this:
@@ -76,8 +85,10 @@ my-pack/
   notice.docx
 ```
 
-The bundled [example pack](https://github.com/leonardonels/fillmate/blob/main/src/fillmate/examples/travel-request/pack.yaml) uses every
-feature.
+The bundled [travel request](https://github.com/leonardonels/fillmate/blob/main/src/fillmate/examples/travel-request/pack.yaml)
+uses every feature except tables. The
+[timesheet](https://github.com/leonardonels/fillmate/blob/main/src/fillmate/examples/timesheet/pack.yaml)
+shows tables.
 
 ## Command line
 
@@ -87,6 +98,7 @@ fillmate fields travel-request                  # fields, profile and presets of
 fillmate profile --set full_name="Jane Doe"
 fillmate fill travel-request --preset head-office --set dates=2026-12-01,2026-12-02 --no-mail
 fillmate fill travel-request --set dates=2026-12-01 --set destination="Leeds" --open-draft
+fillmate fill timesheet --set month="November 2026" --set work=@hours.csv --no-mail
 fillmate import shared-pack.zip
 fillmate export travel-request travel-request.zip
 ```
@@ -95,10 +107,10 @@ fillmate export travel-request travel-request.zip
 
 | What | Where (Linux; macOS/Windows use their usual folders) |
 |---|---|
-| Settings, profile, Google sign-in | `~/.config/fillmate/` (files readable only by you) |
+| Settings, profile, signatures, Google sign-in | `~/.config/fillmate/` (files readable only by you) |
 | SMTP password | system keyring, otherwise `~/.config/fillmate/` |
-| Installed packs, saved presets | `~/.local/share/fillmate/` |
-| Filled documents | `~/Documents/Fillmate/<date>_<destination>/` |
+| Installed packs, saved presets, table drafts | `~/.local/share/fillmate/` |
+| Filled documents and their saved forms (`.fillmate`) | `~/Documents/Fillmate/<date>_<destination>/` |
 
 `FILLMATE_HOME=/some/folder` keeps everything in a single folder instead.
 

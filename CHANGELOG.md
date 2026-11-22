@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.2.1 (unreleased)
+
+- **Signatures** (Settings → Profile → Signatures): add them from photos or scans (the paper becomes transparent
+  and the margins are trimmed), or cut one out of a PDF. Several images of one signature take turns, row after row.
+  They stay on your computer and are never part of a pack or a pack export.
+- A `signature` field type (usually in the profile) and a `sign` entry place a signature in a box on a PDF. A
+  `signature` table column signs each row: ✓ in the form, toggled by a click or Space, and copied by the fill handle.
+- Positions editor: right-click → Add a signature box (drag its corner to resize it), or drag a tall box and
+  choose "A signature box". Table columns can be of kind Signature, and "Firma", "Signature" and "Unterschrift"
+  headers are guessed as one.
+- **Saved forms**: Create documents also writes a `.fillmate` file with what you typed, next to the documents.
+  The drawer lists the latest ones. **Open…** loads one to change it or to start the next month from it, and
+  **Save as…** writes one anywhere, to keep or hand over. `fillmate fill <pack> --from file.fillmate`.
+- **Save a copy…** (toolbar) copies the created documents to a folder you choose.
+- Tables: Import and Export CSV from the ⋯ button.
+- The example timesheet signs each row and the employee signature line.
+
+## 0.2.0 (unreleased)
+
+- **Tables** for timesheets and other ruled grids: a `table` field with typed columns and formula columns
+  (e.g. `hours_between(start, end)`), filled row by row into the PDF's grid.
+- Rows that don't fit repeat the page. Text on that page is drawn on each copy, and `sheet.rows`, `sheet.number`
+  and `sheet.count` give per-page totals ("Tot. ore per pagina") and "Sheet 1 of 2".
+- New filters and functions: `total('column')`, `days('column')`, `hours` (4:30 → 4,5), `hhmm`,
+  `hours_between()`, `duration()`. Durations print as H:MM and add up.
+- Positions editor: press the grid button, drag over a table, or right-click in it, and fillmate snaps to its lines, guesses the
+  columns from the header (dates, times, hours as a formula, signature left empty), and offers the totals as
+  values. Without ruled lines you get a grid to size: set rows and columns, drag dividers, stretch the edges.
+- In the form a table is a small spreadsheet. The fill handle and Ctrl+D continue dates (working days, same rows
+  per day), numbers and patterns. Copy and paste work with Excel and Sheets. "Add days…" adds a row for each
+  working day in a range, and "Expand" opens a larger window.
+- Table rows are kept as a draft until you clear them, so a monthly timesheet can be filled day by day.
+- Times can be typed as 9, 930, 9.30 or 9:30.
+- Command line: `--set work=@rows.csv` fills a table from a CSV file. Without it, the rows typed in the app are
+  used.
+- Second example pack: a monthly timesheet.
+
 ## 0.1.1 (2026-11-22)
 
 - Dark theme: the drawer button's icon turns light with the rest of the toolbar.

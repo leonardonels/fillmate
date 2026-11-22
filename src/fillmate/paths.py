@@ -43,12 +43,18 @@ def examples_dir() -> Path:
     return Path(__file__).resolve().parent / "examples"
 
 
-def write_private(path: Path, text: str):
-    """Write a file readable only by the current user (profile data, credentials)."""
+def write_private(path: Path, data):
+    """Write a file readable only by the current user (profile data, credentials, signatures).
+
+    `data` is text, or bytes for binary files."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(text)
+    if isinstance(data, bytes):
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    else:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
     try:
         os.chmod(path, 0o600)
     except OSError:

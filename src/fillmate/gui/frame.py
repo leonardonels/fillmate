@@ -517,6 +517,46 @@ class Message(QDialog):
         self.frame.after_show()
 
 
+class PaperDialog(QDialog):
+    """A dialog on fillmate's dotted paper, with its title as a heading."""
+
+    def __init__(self, parent, title):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.frame = Frame(self, lambda w, pos: is_passive(w), dialog=True)
+        if PLATFORM == "linux":
+            self.setStyleSheet("QDialog { background: transparent; }")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        paper = ink.DotGrid()
+        paper.radius = self.frame.radius
+        outer.addWidget(paper)
+        self.body = QVBoxLayout(paper)
+        self.body.setContentsMargins(24, 20, 24, 18)
+        self.body.setSpacing(12)
+        self.body.addWidget(ink.set_role(ink.label(title), "h1"))
+        self.edge = None
+
+    def buttons(self, *buttons):
+        row = QHBoxLayout()
+        row.addStretch()
+        for b in buttons:
+            b.setMinimumHeight(36)
+            row.addWidget(b)
+        self.body.addLayout(row)
+        self.edge = self.frame.overlay(self)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self.edge is not None:
+            self.edge.setGeometry(self.rect())
+            self.edge.raise_()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.frame.after_show()
+
+
 DANGER = ("Remove", "Delete")
 
 

@@ -4,14 +4,14 @@ import shutil
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QEventLoop, QPoint, QProcess, QRect, Qt, QUrl, Signal
+from PySide6.QtCore import QEventLoop, QPoint, QProcess, QRect, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QFontMetrics, QIcon, QKeySequence, QRegion, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QComboBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QApplication, QButtonGroup, QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-from .. import FillmateError, engine, mail, store
+from .. import FillmateError, engine, fills, mail, store
 from ..authoring import sync_docx_fields
 from ..fill_docx import docx_to_pdf, find_libreoffice
 from ..fill_pdf import render_pages
@@ -158,7 +158,11 @@ class MainWindow(QMainWindow):
         self.auth = GoogleAuth()
         self.settings = store.load_settings()
         self.packs, self.pack = [], None
-        self.inputs = {}
+        self.inputs, self.tables = {}, {}
+        self.draft_timer = QTimer(self)  # table rows are kept a moment after each edit
+        self.draft_timer.setSingleShot(True)
+        self.draft_timer.setInterval(500)
+        self.draft_timer.timeout.connect(self.save_draft)
         self.outputs, self.attachments, self.out = None, [], None
         self.dark = False
         self.sent_at = None
@@ -325,6 +329,7 @@ class MainWindow(QMainWindow):
         self.tools = self.glass.add(GlassGroup(self.canvas))
         self.folder_btn = self.tools.add("folder", "Show in folder",
                                          lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.out))))
+        self.copy_btn = self.tools.add("doc", "Save a copy of the documents…", self.save_copy)
         self.draft_btn = self.tools.add("mail", "Open in your mail app", self.open_in_mail_app)
         self.send_btn = self.glass.add(GlassButton("Send", "send", self.canvas, tint=T["ink"]))
         self.send_btn.clicked.connect(self.send)
@@ -391,6 +396,24 @@ class MainWindow(QMainWindow):
         self.delete_preset_btn.setCheckable(False)
         self.delete_preset_btn.clicked.connect(self.delete_preset)
         v.addWidget(self.delete_preset_btn)
+        v.addSpacing(14)
+        v.addWidget(set_role(label("Saved forms"), "sec"))
+        self.fill_list = QVBoxLayout()  # the latest forms filled with this pack, newest first
+        self.fill_list.setSpacing(2)
+        v.addLayout(self.fill_list)
+        row = QHBoxLayout()
+        row.setSpacing(2)
+        self.open_fill_btn = SideButton("Open…", "folder", muted=True)
+        self.open_fill_btn.setCheckable(False)
+        self.open_fill_btn.setToolTip("Open a saved form (.fillmate) to change it or start from it")
+        self.open_fill_btn.clicked.connect(self.open_fill)
+        row.addWidget(self.open_fill_btn)
+        self.save_fill_btn = SideButton("Save as…", None, muted=True)
+        self.save_fill_btn.setCheckable(False)
+        self.save_fill_btn.setToolTip("Save what is in the form as a file, to keep or to hand over")
+        self.save_fill_btn.clicked.connect(self.save_fill_as)
+        row.addWidget(self.save_fill_btn)
+        v.addLayout(row)
         v.addStretch()
         self.test_note = QWidget()
         tn = QVBoxLayout(self.test_note)
@@ -521,6 +544,9 @@ class MainWindow(QMainWindow):
         self.frame.after_show()
 
     def closeEvent(self, event):
+        if self.draft_timer.isActive():
+            self.draft_timer.stop()
+            self.save_draft()
         if self.scheme_monitor:
             self.scheme_monitor.kill()
             self.scheme_monitor.waitForFinished(1000)
@@ -589,6 +615,96 @@ class MainWindow(QMainWindow):
     def rebuild_packs(self):
         self._fill_list(self.pack_list, self.pack_group, self.pack_combo, self.pack_combo.setCurrentIndex)
 
+    def rebuild_fills(self):
+        while self.fill_list.count():
+            w = self.fill_list.takeAt(0).widget()
+            if w:
+                ink.discard(w)
+        has_pack = self.pack is not None
+        self.save_fill_btn.setEnabled(has_pack)
+        if not has_pack:
+            return
+        for path, folder, saved in fills.recent_fills(store.output_dir(self.settings), self.pack.id, n=5):
+            # The row is named like its output folder (the pack's own name for that filling, e.g. the
+            # month or the trip); when it was saved and what a click does are in the tooltip.
+            try:
+                when = dt.datetime.fromisoformat(saved).strftime("%d %B %Y at %H:%M")
+            except ValueError:
+                when = saved or "unknown"
+            b = SideButton(folder.replace("_", " ").replace("-", " ") if not folder[:4].isdigit()
+                           else folder.replace("_", " "), None)
+            b.setCheckable(False)
+            b.setToolTip(f"Saved {when}, when its documents were created.\n"
+                         f"Click to put these values back in the form.\n{path}")
+            b.clicked.connect(lambda _c=False, path=path: self.load_fill(path))
+            self.fill_list.addWidget(b)
+
+    def open_fill(self):
+        start = str(store.output_dir(self.settings))
+        path, _ = QFileDialog.getOpenFileName(self, "Open a saved form", start, f"Saved form (*{fills.SUFFIX})")
+        if path:
+            self.load_fill(Path(path))
+
+    def load_fill(self, path):
+        """Put a saved form's values in the form (switching to its pack if needed)."""
+        try:
+            saved = fills.load_fill(path)
+        except FillmateError as e:
+            frame.tell(self, "Open saved form", str(e))
+            return
+        if self.pack is None or saved["pack"] != self.pack.id:
+            index = self.pack_combo.findData(saved["pack"])
+            if index < 0:
+                frame.tell(self, "Open saved form", f"This form was filled with the pack “{saved['pack']}”, "
+                                 "which isn't installed. Import that pack first (Settings → Form packs).")
+                return
+            self.pack_combo.setCurrentIndex(index)  # rebuilds the form for that pack
+        values = fills.for_pack(saved, self.pack)
+        if saved["preset"] and self.preset_combo.findData(saved["preset"]) >= 0:
+            self.preset_combo.setCurrentIndex(self.preset_combo.findData(saved["preset"]))
+        for fid, value in values.items():
+            if fid in self.inputs:
+                self.inputs[fid].set(value)
+        self.clear_result()
+        if self.tables:  # the rows become the draft you go on from
+            self.save_draft()
+        self.status.setText(f"Opened {Path(path).parent.name}/{Path(path).name}")
+
+    def save_fill_as(self):
+        if self.pack is None:
+            return
+        name = self.out.name if self.out else self.pack.id
+        start = str((self.out or store.output_dir(self.settings)) / f"{name}{fills.SUFFIX}")
+        path, _ = QFileDialog.getSaveFileName(self, "Save the form", start, f"Saved form (*{fills.SUFFIX})")
+        if not path:
+            return
+        values = {fid: fi.get() for fid, fi in self.inputs.items()}
+        try:
+            saved = fills.save_fill(path, self.pack, values, self.preset_combo.currentData())
+        except OSError as e:
+            frame.tell(self, "Save the form", f"Cannot write {Path(path).name}: {e.strerror}")
+            return
+        self.status.setText(f"Saved {saved.name}")
+
+    def save_copy(self):
+        """Copy the created documents (and the saved form) to a folder, to hand them over without email."""
+        if not self.attachments:
+            return
+        dest = QFileDialog.getExistingDirectory(self, "Save a copy of the documents in", str(Path.home()))
+        if not dest:
+            return
+        files = list(self.attachments)
+        saved = self.out / f"{self.pack.id}{fills.SUFFIX}" if self.out else None
+        if saved and saved.is_file():
+            files.append(saved)
+        try:
+            for f in files:
+                shutil.copy(f, Path(dest) / Path(f).name)
+        except OSError as e:
+            frame.tell(self, "Save a copy", f"Cannot copy {Path(f).name}: {e.strerror}")
+            return
+        self.status.setText(f"{len(files)} files copied to {dest}")
+
     def rebuild_presets(self):
         self._fill_list(self.preset_list, self.preset_group, self.preset_combo, self.preset_combo.setCurrentIndex)
 
@@ -649,6 +765,9 @@ class MainWindow(QMainWindow):
         return "DRAFT", f"{dt.date.today():%d %b %Y}"
 
     def pack_changed(self):
+        if self.draft_timer.isActive():  # keep the rows of the pack being left
+            self.draft_timer.stop()
+            self.save_draft()
         pid = self.pack_combo.currentData()
         self.pack = next((p for p in self.packs if p.id == pid), None)
         self.rebuild_packs()
@@ -656,7 +775,7 @@ class MainWindow(QMainWindow):
             w = self.form_holder.takeAt(0).widget()
             if w:
                 ink.discard(w)
-        self.inputs = {}
+        self.inputs, self.tables = {}, {}
         self.clear_result()
         has_pack = self.pack is not None
         for w in (self.save_preset_btn, self.gen_btn):
@@ -672,6 +791,7 @@ class MainWindow(QMainWindow):
             self.form_holder.addWidget(btn)
             self.docx_row.hide()
             self.reload_presets()
+            self.rebuild_fills()
             return
         if self.settings.get("last_pack") != self.pack.id:
             self.settings["last_pack"] = self.pack.id
@@ -680,7 +800,13 @@ class MainWindow(QMainWindow):
             desc = label(self.pack.description, "muted", wrap=True)
             desc.setContentsMargins(6, 0, 6, 0)
             self.form_holder.addWidget(desc)
-        box, self.inputs = build_form(self.pack.fields, self.pack.date_format)
+        box, self.inputs = build_form(self.pack.fields, self.pack.date_format, self.pack)
+        self.tables = {fid: fi for fid, fi in self.inputs.items() if fi.field.type == "table"}
+        if self.tables:  # rows typed earlier (a timesheet is filled over a month)
+            draft = store.load_draft(self.pack.id)
+            for fid, fi in self.tables.items():
+                fi.set(draft.get(fid))
+                fi.widget.changed.connect(self.draft_timer.start)
         if self.inputs:  # a pack with nothing to ask gets no empty sheet
             sheet = Sheet()
             QVBoxLayout(sheet).addWidget(box)
@@ -690,6 +816,7 @@ class MainWindow(QMainWindow):
             ink.discard(box)
         self.docx_row.setVisible(any(d.kind == "docx" for d in self.pack.documents))
         self.reload_presets(first=True)
+        self.rebuild_fills()
 
     def all_presets(self):
         if not self.pack:
@@ -719,7 +846,7 @@ class MainWindow(QMainWindow):
         for f in self.pack.fields:
             if f.id in values:
                 self.inputs[f.id].set(values[f.id])
-            elif name is not None and f.type not in ("dates", "date"):
+            elif name is not None and f.type not in ("dates", "date", "table"):
                 self.inputs[f.id].set(f.default)
 
     def save_preset(self):
@@ -730,8 +857,8 @@ class MainWindow(QMainWindow):
             return
         values = {}
         for fid, fi in self.inputs.items():
-            if fi.field.type in ("date", "dates"):
-                continue  # presets describe where/what, not when
+            if fi.field.type in ("date", "dates", "table"):
+                continue  # presets describe where/what, not when (tables are kept as a draft)
             values[fid] = fi.get()
         presets = store.load_user_presets(self.pack.id)
         presets[name] = values
@@ -745,6 +872,13 @@ class MainWindow(QMainWindow):
             del presets[name]
             store.save_user_presets(self.pack.id, presets)
             self.reload_presets()
+
+    def save_draft(self):
+        if self.pack is not None and getattr(self, "tables", None):
+            try:
+                store.save_draft(self.pack.id, {fid: fi.get() for fid, fi in self.tables.items()})
+            except (OSError, FillmateError) as e:
+                self.status.setText(f"Could not keep the table rows: {e}")
 
     def _remember_docx_pdf(self, on):
         self.settings["attach_docx_as_pdf"] = on
@@ -799,6 +933,7 @@ class MainWindow(QMainWindow):
             self.send_btn.setToolTip("" if can_send else why)
         self.draft_btn.setEnabled(ready)
         self.folder_btn.setEnabled(ready)
+        self.copy_btn.setEnabled(ready)
         self._update_room()  # the stamp follows the state
 
     def clear_result(self):
@@ -835,6 +970,7 @@ class MainWindow(QMainWindow):
             ctx = engine.build_context(pack, profile, values, preset)
             out = engine.output_folder(ctx, store.output_dir(settings))
             outputs = engine.generate(ctx, out)
+            fills.save_fill(out / f"{pack.id}{fills.SUFFIX}", pack, values, name)  # to open it again later
             attachments = [o.path for o in outputs]
             previews, preview_dir = {}, cache_dir() / "preview"
             for o in outputs:
@@ -866,6 +1002,7 @@ class MainWindow(QMainWindow):
         self.filled_at = dt.datetime.now()
         self.status.setText(f"Saved in {r['out']}")
         self.out, self.outputs, self.attachments = r["out"], r["outputs"], r["attachments"]
+        self.rebuild_fills()
         for i, d in enumerate(self.pack.documents):
             preview = self.tabs.widget(i)
             content = r["previews"].get(d.id)
@@ -974,6 +1111,11 @@ class MainWindow(QMainWindow):
             self._packs_dirty = True
             self.reload()
             return
+        for fi in self.inputs.values():  # signatures may have been added or removed
+            if fi.field.type == "signature":
+                fi.widget.refresh()
+            elif fi.field.type == "table":
+                fi.widget.model.refresh(emit=False)
         old = self.settings
         self.settings = store.load_settings()
         if (old.get("packs_dir"), old.get("output_dir")) != (self.settings.get("packs_dir"),

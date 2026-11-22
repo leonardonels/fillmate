@@ -92,3 +92,33 @@ def load_user_presets(pack_id):
 
 def save_user_presets(pack_id, presets):
     _write_yaml(_presets_path(pack_id), presets)
+
+
+# --- drafts: table rows typed in the app, kept until cleared -----------------
+
+def _draft_path(pack_id):
+    return data_dir() / "drafts" / f"{pack_id}.yaml"
+
+
+def _plain(value):
+    """YAML-safe copy of row values (dates as ISO text, everything else as text)."""
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
+def load_draft(pack_id):
+    return {str(k): v for k, v in _read_yaml(_draft_path(pack_id)).items() if isinstance(v, list)}
+
+
+def save_draft(pack_id, values):
+    path = _draft_path(pack_id)
+    values = {k: v for k, v in values.items() if v}
+    if not values:
+        path.unlink(missing_ok=True)
+        return
+    _write_yaml(path, _plain(values))
