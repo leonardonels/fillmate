@@ -5,6 +5,8 @@ Fill in the same paperwork again and again? fillmate turns the forms you keep fi
 Type in what changes each time, check the preview, and send the filled PDF and Word
 documents by email.
 
+![fillmate: the filled travel request on the left, the form on the right](https://raw.githubusercontent.com/leonardonels/fillmate/main/docs/images/main.png)
+
 - **Form packs**: one folder with your templates and a `pack.yaml` that says what goes
   where. Share a pack as a `.zip` and a colleague with the same paperwork is ready in a
   minute. Your personal details are never part of it.
@@ -18,6 +20,12 @@ documents by email.
   each send shows exactly who gets the email.
 - **Rules**: required fields, and warnings such as "less than 2 working days' notice"
   that take public holidays into account.
+
+| Packs, presets and settings in a drawer | The check before each email goes out |
+|---|---|
+| ![The drawer open over the preview](https://raw.githubusercontent.com/leonardonels/fillmate/main/docs/images/drawer.png) | ![The send check in test mode](https://raw.githubusercontent.com/leonardonels/fillmate/main/docs/images/send-check.png) |
+
+<sub>Screenshots from the demo (`tools/demo.py`), with made-up data.</sub>
 
 ## Install
 
