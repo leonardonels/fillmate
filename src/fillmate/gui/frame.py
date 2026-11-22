@@ -27,6 +27,32 @@ MAC_LIGHTS = 36  # room the traffic lights need at the top of the sidebar
 ALL = ["minimize", "maximize", "close"]
 
 
+def hide_mac_title(window):
+    """Hide the window title the title bar would draw over the content (the window keeps its name for the
+    Dock and Mission Control). Best effort, like place_mac_lights."""
+    if PLATFORM != "mac":
+        return
+    try:
+        import ctypes
+        import ctypes.util
+        from ctypes import c_long, c_void_p
+
+        objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library("objc"))
+        objc.sel_registerName.restype = c_void_p
+        objc.sel_registerName.argtypes = [ctypes.c_char_p]
+        msg = ctypes.cast(objc.objc_msgSend, c_void_p).value
+
+        def send(restype, obj, sel, *args):
+            proto = ctypes.CFUNCTYPE(restype, c_void_p, c_void_p, *[type(a) for a in args])
+            return proto(msg)(obj, objc.sel_registerName(sel.encode()), *args)
+
+        nswindow = send(c_void_p, c_void_p(int(window.winId())), "window")
+        if nswindow:
+            send(None, c_void_p(nswindow), "setTitleVisibility:", c_long(1))  # NSWindowTitleHidden
+    except Exception:  # noqa: BLE001 - cosmetic
+        return
+
+
 def place_mac_lights(window, center_y, first_x, spacing=20):
     """Move the real traffic lights so their centres sit at (first_x + i * spacing, center_y), in the
     window's points: centred on the toolbar row, as a native toolbar would put them. AppKit lays them out
@@ -286,6 +312,8 @@ class Frame(QObject):
         if PLATFORM == "mac":
             window.setWindowFlag(Qt.ExpandedClientAreaHint, True)
             window.setWindowFlag(Qt.NoTitleBarBackgroundHint, True)
+            # Qt 6.9+ pads the contents by the title bar's height; the layouts here already run under it
+            window.setAttribute(Qt.WA_ContentsMarginsRespectsSafeArea, False)
         else:
             window.setWindowFlag(Qt.FramelessWindowHint, True)
             if PLATFORM == "linux":
@@ -322,6 +350,7 @@ class Frame(QObject):
     def after_show(self):
         if PLATFORM == "windows":
             set_windows_round_corners(self.window)
+        hide_mac_title(self.window)
         self.place_lights()
 
     def place_lights(self):
@@ -479,7 +508,7 @@ class Message(QDialog):
         paper.radius = self.frame.radius
         outer.addWidget(paper)
         lay = QVBoxLayout(paper)
-        lay.setContentsMargins(24, 20, 24, 18)
+        lay.setContentsMargins(24, 20 + self.frame.mac_top(), 24, 18)  # a Mac's lights sit above the title
         lay.setSpacing(12)
         lay.addWidget(ink.set_role(ink.label(title), "h1"))
         body = ink.label(text, "lbl" if field is not None else None, wrap=True)
@@ -532,7 +561,7 @@ class PaperDialog(QDialog):
         paper.radius = self.frame.radius
         outer.addWidget(paper)
         self.body = QVBoxLayout(paper)
-        self.body.setContentsMargins(24, 20, 24, 18)
+        self.body.setContentsMargins(24, 20 + self.frame.mac_top(), 24, 18)
         self.body.setSpacing(12)
         self.body.addWidget(ink.set_role(ink.label(title), "h1"))
         self.edge = None

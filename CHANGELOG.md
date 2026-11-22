@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2 (2026-11-22)
+
+- macOS: the window content no longer sits below the title bar, so the traffic lights line up with the toolbar
+  row again instead of floating above the drawer button. The window title is hidden, and the lights in Settings and
+  the Positions editor sit inside their panels instead of on the edge. Small dialogs leave room for the lights
+  above their title.
+
 ## 0.2.1 (2026-11-22)
 
 - **Signatures** (Settings → Profile → Signatures): add them from photos or scans (the paper becomes transparent

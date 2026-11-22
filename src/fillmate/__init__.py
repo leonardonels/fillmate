@@ -1,6 +1,6 @@
 """fillmate: fill recurring paperwork from reusable form packs and send it by email."""
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 
 class FillmateError(Exception):
