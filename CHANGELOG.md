@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.1 (unreleased)
+## 0.2.1 (2026-11-22)
 
 - **Signatures** (Settings → Profile → Signatures): add them from photos or scans (the paper becomes transparent
   and the margins are trimmed), or cut one out of a PDF. Several images of one signature take turns, row after row.
@@ -17,7 +17,7 @@
 - Tables: Import and Export CSV from the ⋯ button.
 - The example timesheet signs each row and the employee signature line.
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-11-22)
 
 - **Tables** for timesheets and other ruled grids: a `table` field with typed columns and formula columns
   (e.g. `hours_between(start, end)`), filled row by row into the PDF's grid.
