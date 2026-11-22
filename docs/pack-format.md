@@ -36,7 +36,7 @@ fields:
 |---|---|
 | `id` | Name used in templates. Letters, digits and `_`; it can't start with a digit |
 | `label` | Shown in the app |
-| `type` | `text` (default), `multiline`, `date`, `dates` (one or more days), `time` (`HH:MM`), `bool`, `choice`, `table` (see [Tables](#tables)) |
+| `type` | `text` (default), `multiline`, `date`, `dates` (one or more days), `time` (`HH:MM`), `bool`, `choice`, `table` (see [Tables](#tables)), `signature` (see [Signatures](#signatures)) |
 | `default` | Initial value. `date` fields accept `today` |
 | `required` | Refuse to continue while it's empty |
 | `placeholder`, `help` | Hint text and tooltip |
@@ -151,6 +151,18 @@ button gives you a grid to size: set the rows and columns, drag the
 dividers, and drag an outer edge to stretch the whole grid. The totals appear in the list of
 values for text boxes.
 
+### PDF: signatures
+
+```yaml
+- {sign: my_signature, box: [40, 748, 250, 780]}           # a signature field; box: [x0, y0, x1, y1]
+- {sign: my_signature, box: [335, 748, 555, 780], when: "approved"}   # optional condition
+```
+
+The signature is drawn as large as fits in the box, centred, keeping its proportions.
+Nothing is drawn when the field is empty ("Don't sign"). In **Edit positions…**, right-click →
+**Add a signature box here** (drag its bottom-right corner to resize it), or drag a tall box
+and choose **A signature box**.
+
 ### PDF: check marks
 
 ```yaml
@@ -224,6 +236,7 @@ fields:
 | `type` | `text` (default), `date`, `time`, `number` (accepts `4,5`), `choice` (with `options`) |
 | `formula` | A Jinja expression over the row's columns (and the form's other values). The column is computed, not typed |
 | `format` | For dates: how they are written in the PDF (default: the pack's `date_format`) |
+| `type: signature` | Each row can be signed: your signature is drawn in the cell. `default: "yes"` signs new rows |
 | `default` | The value a new row starts with |
 | `required` | Every row needs it |
 
@@ -254,6 +267,47 @@ In the app, a table is a small spreadsheet:
 The rows are kept as a draft, outside the pack, until you press **Clear**. On the command
 line, `--set work=@rows.csv` reads a CSV whose header names the columns (by id or label);
 without it, the rows typed in the app are used.
+
+## Signatures
+
+Signatures belong to the person filling in the form, not to the pack. In **Settings → Profile →
+Signatures** you add yours:
+- from photos or scans: the paper becomes transparent and the margins are trimmed;
+- or cut out of a PDF, at 600 dpi. Only what is inside the box is kept, nothing else of the page.
+
+Several images of one signature are its variants: table rows (and repeated pages) take turns.
+Signatures stay on your computer, in the config folder, readable only by you. They are never part
+of a pack or of a pack export.
+
+A pack asks for one with a `signature` field, usually in the profile so it is chosen once:
+
+```yaml
+profile:
+  - {id: my_signature, label: Your signature, type: signature, default: "yes"}
+```
+
+Its value is the name (id) of one of your signatures, `"yes"` (your first one), or empty
+(don't sign). With `"yes"` and no signature added yet, nothing is drawn, unless the field is
+`required`. In text templates a signature writes nothing.
+
+Only sign for yourself: leave lines for other people's signatures (a supervisor, a manager)
+empty. Some offices want a handwritten or a digital (qualified) signature: check that an
+inserted image is accepted.
+
+## Saved forms
+
+Pressing **Create documents** also writes `<pack id>.fillmate` next to the documents: a small
+YAML file with what was typed in the form, including table rows. Profile details and signature
+images are not in it; a signature is saved by its name.
+
+The drawer lists the latest saved forms of the pack. **Open…** puts a saved form back in the
+form, to change something and create the documents again, or to start next month from this one.
+**Save as…** writes the form anywhere, to keep it or hand it over: someone with the same pack can
+open it. On the command line:
+
+```bash
+fillmate fill timesheet --from ~/Documents/Fillmate/November-2026_timesheet/timesheet.fillmate --set month="December 2026"
+```
 
 ## Output folder and email
 

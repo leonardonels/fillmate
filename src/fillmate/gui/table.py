@@ -7,24 +7,26 @@ cells (tab-separated, as Excel and Sheets do), Delete clears.
 """
 import datetime as dt
 import re
+from pathlib import Path
 
 from PySide6.QtCore import (
     QAbstractTableModel, QItemSelection, QItemSelectionModel, QModelIndex, QRect, Qt, QTimer, Signal,
 )
 from PySide6.QtGui import QColor, QGuiApplication, QKeySequence, QPainter, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QDialog, QFormLayout, QHBoxLayout, QHeaderView, QMessageBox, QPushButton,
+    QAbstractItemView, QCheckBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QMessageBox, QPushButton,
     QSpinBox, QTableView, QVBoxLayout, QWidget,
 )
 
 from .. import FillmateError
-from ..engine import Renderer, compute_rows, convert, parse_time
+from .. import signatures
+from ..engine import NO, YES, Renderer, compute_rows, convert, parse_time, rows_from_csv, rows_to_csv
 from ..series import extend
-from ..templating import is_working_day, parse_date, total_filter
+from ..templating import is_working_day, parse_date, slug, total_filter
 from . import frame as frame_mod
 from . import ink
 from .fields import date_edit, qt_date_format
-from .frame import Frame, is_passive
+from .frame import PaperDialog
 from .ink import T, label, set_role
 
 HANDLE = 7          # px: the fill handle's square
@@ -79,7 +81,8 @@ class RowsModel(QAbstractTableModel):
 
     def flags(self, index):
         base = Qt.ItemIsEnabled | Qt.ItemIsSelectable
-        return base if self.columns[index.column()].formula else base | Qt.ItemIsEditable
+        col = self.columns[index.column()]
+        return base if col.formula or col.type == "signature" else base | Qt.ItemIsEditable
 
     def data(self, index, role=Qt.DisplayRole):
         r, c = index.row(), index.column()
@@ -91,6 +94,8 @@ class RowsModel(QAbstractTableModel):
                 value = self.computed[r].get(col.id, "") if r < len(self.computed) else ""
                 return "" if value in (None, "") else str(value)
             value = self.rows[r].get(col.id, "")
+            if col.type == "signature":  # ✓ when signed; the signature's name on hover
+                return "✓" if value else ""
             if role == Qt.DisplayRole and col.type == "date" and value and (r, c) not in self.errors:
                 return _date_text(value, short_format(col.format or self.pack.date_format))
             if role == Qt.EditRole and col.type == "date" and value and (r, c) not in self.errors:
@@ -105,6 +110,13 @@ class RowsModel(QAbstractTableModel):
                 return self.errors[(r, c)]
             if col.type == "date" and r < len(self.rows) and self.rows[r].get(col.id):
                 return _date_text(self.rows[r][col.id], "%A %d %B %Y")
+            if col.type == "signature":
+                sig = self.computed[r].get(col.id) if r < len(self.computed) else None
+                if isinstance(sig, signatures.Signature):
+                    return f"Signed: {sig.name}. Click (or Space) to leave this row unsigned."
+                if r < len(self.rows) and self.rows[r].get(col.id) and not signatures.list_signatures():
+                    return "Will be signed once you add a signature in Settings → Profile."
+                return "Click (or Space) to sign this row."
             return f"= {col.formula}" if col.formula else (col.help or None)
         if role == Qt.TextAlignmentRole:
             return int((Qt.AlignLeft if col.type == "text" and not col.formula else Qt.AlignHCenter) | Qt.AlignVCenter)
@@ -127,6 +139,8 @@ class RowsModel(QAbstractTableModel):
             return parse_time(text) or text
         if col.type == "date":
             return self.read_date(text) or text
+        if col.type == "signature":
+            return "" if text.lower() in NO else "yes" if text.lower() in YES else text
         return text
 
     def read_date(self, text):
@@ -181,6 +195,15 @@ class RowsModel(QAbstractTableModel):
             self.beginRemoveRows(QModelIndex(), n + 1, len(self.rows))
             del self.rows[n:]
             self.endRemoveRows()
+
+    def toggle_signatures(self, cells):
+        """Sign the (row, column) cells, or unsign them when they are all signed already."""
+        cells = [(r, c) for r, c in cells if self.columns[c].type == "signature"]
+        if not cells:
+            return False
+        signed = all(r < len(self.rows) and self.rows[r].get(self.columns[c].id) for r, c in cells)
+        self.set_cells([(r, c, "" if signed else "yes") for r, c in cells])
+        return True
 
     def remove_rows(self, first, count):
         first, last = first, min(first + count, len(self.rows)) - 1
@@ -360,6 +383,13 @@ class TableView(QTableView):
             self.drag = (top, bottom, left, right, bottom)
             self.viewport().update()
             return
+        index = self.indexAt(event.position().toPoint())
+        plain = not event.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier)
+        if event.button() == Qt.LeftButton and plain and index.isValid() \
+                and self.model().columns[index.column()].type == "signature":
+            super().mousePressEvent(event)  # select it, then sign or unsign it
+            self.model().toggle_signatures([(index.row(), index.column())])
+            return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
@@ -434,6 +464,10 @@ class TableView(QTableView):
         if event.key() == Qt.Key_D and event.modifiers() & Qt.ControlModifier:
             self.fill_down()
             return
+        if event.key() == Qt.Key_Space and b and self.state() != QAbstractItemView.EditingState:
+            top, bottom, left, right = b
+            if model.toggle_signatures([(r, c) for r in range(top, bottom + 1) for c in range(left, right + 1)]):
+                return
         super().keyPressEvent(event)
 
     def paste(self, text):
@@ -475,46 +509,6 @@ class TableView(QTableView):
         top, bottom, left, right = b
         model.set_cells([(r, c, model.rows[top].get(model.columns[c].id, ""))
                          for r in range(top + 1, bottom + 1) for c in range(left, right + 1)])
-
-
-class PaperDialog(QDialog):
-    """A dialog on fillmate's dotted paper, with its title as a heading."""
-
-    def __init__(self, parent, title):
-        super().__init__(parent)
-        self.setWindowTitle(title)
-        self.frame = Frame(self, lambda w, pos: is_passive(w), dialog=True)
-        if frame_mod.PLATFORM == "linux":
-            self.setStyleSheet("QDialog { background: transparent; }")
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        paper = ink.DotGrid()
-        paper.radius = self.frame.radius
-        outer.addWidget(paper)
-        self.body = QVBoxLayout(paper)
-        self.body.setContentsMargins(24, 20, 24, 18)
-        self.body.setSpacing(12)
-        self.body.addWidget(set_role(label(title), "h1"))
-        self.edge = None
-
-    def buttons(self, *buttons):
-        row = QHBoxLayout()
-        row.addStretch()
-        for b in buttons:
-            b.setMinimumHeight(36)
-            row.addWidget(b)
-        self.body.addLayout(row)
-        self.edge = self.frame.overlay(self)
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self.edge is not None:
-            self.edge.setGeometry(self.rect())
-            self.edge.raise_()
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        self.frame.after_show()
 
 
 class AddDaysDialog(PaperDialog):
@@ -604,6 +598,11 @@ class TableInput(QWidget):
         expand.clicked.connect(self.expand)
         row.addWidget(expand)
         row.addStretch()
+        more = QPushButton("⋯")
+        more.setToolTip("Import or export the rows as CSV (Excel, LibreOffice, Sheets)")
+        more.setFixedWidth(44)
+        more.clicked.connect(lambda: self.csv_menu(more))
+        row.addWidget(more)
         clear = QPushButton("Clear")
         clear.setToolTip("Remove every row (for a new month)")
         clear.clicked.connect(self.clear)
@@ -669,6 +668,41 @@ class TableInput(QWidget):
         base = len(self.model.rows)
         self.model.set_cells([(base + k, c, day.isoformat()) for k, day in enumerate(days)])
         self.view.scrollTo(self.model.index(base, c))
+
+    def csv_menu(self, button):
+        m = ink.menu(self)
+        m.addAction("Import rows from CSV…", self.import_csv)
+        export = m.addAction("Export rows to CSV…", self.export_csv)
+        export.setEnabled(bool(self.model.get_rows()))
+        m.exec(button.mapToGlobal(button.rect().bottomLeft()))
+
+    def import_csv(self):
+        path, _ = QFileDialog.getOpenFileName(self.window(), "Rows from a CSV file", str(Path.home()),
+                                              "CSV (*.csv *.txt)")
+        if not path:
+            return
+        try:
+            rows = rows_from_csv(self.field, Path(path).read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError) as e:
+            frame_mod.tell(self.window(), "Import CSV", f"Cannot read {Path(path).name}: {e}")
+            return
+        except FillmateError as e:
+            frame_mod.tell(self.window(), "Import CSV", str(e))
+            return
+        self.model.set_rows(self.model.get_rows() + rows)  # added after the rows already there
+        self._edited()
+
+    def export_csv(self):
+        name = f"{slug(self.field.label) or 'rows'}.csv"
+        path, _ = QFileDialog.getSaveFileName(self.window(), "Export the rows", str(Path.home() / name), "CSV (*.csv)")
+        if not path:
+            return
+        keep = [i for i, r in enumerate(self.model.rows) if not self.model.blank(r)]
+        rows = [{**self.model.rows[i], **self.model.computed[i]} for i in keep]
+        try:
+            Path(path).write_text(rows_to_csv(self.field, rows, self.pack.date_format), encoding="utf-8-sig")
+        except OSError as e:
+            frame_mod.tell(self.window(), "Export CSV", f"Cannot write {Path(path).name}: {e.strerror}")
 
     def clear(self):
         if not self.model.rows:

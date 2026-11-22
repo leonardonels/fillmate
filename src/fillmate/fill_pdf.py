@@ -12,7 +12,7 @@ import datetime as dt
 
 import pymupdf
 
-from . import InputError, PackError
+from . import InputError, PackError, signatures
 from .templating import parse_date
 
 CELL_PAD = 2.0
@@ -92,13 +92,18 @@ def cell_text(column, value, date_format):
     return str(value)
 
 
-def put_table(page, entry, field, rows, date_format, where):
+def put_table(page, entry, field, rows, date_format, where, start=0):
+    """Rows into the grid; `start` is the first row's number in the whole table (for signature variants)."""
     xs, ys = entry["xs"], entry["ys"]
     for i, row in enumerate(rows):
         for j, cid in enumerate(entry["cols"]):
             if cid is None:
                 continue
             column = field.column(cid)
+            value = row.get(cid)
+            if isinstance(value, signatures.Signature):
+                signatures.draw(page, (xs[j], ys[i], xs[j + 1], ys[i + 1]), value, variant=start + i)
+                continue
             align = entry["align"][j] if entry["align"] else ("left" if column.type == "text" and not column.formula else "center")
             put_cell(page, (xs[j], ys[i], xs[j + 1], ys[i + 1]), cell_text(column, row.get(cid), date_format),
                      align, entry["font"], entry["size"], entry["min_size"], f"{where}, row {i + 1}, {column.label}")
@@ -155,10 +160,11 @@ def fill_pdf(doc, values, renderer, out):
         def targets(page_no):
             """(page index, sheet values) for each copy an entry on page_no is drawn on."""
             if page_no == base:
-                return [(base + k, {"rows": rows, "number": k + 1, "count": len(sheets)})
+                capacity = len(repeat["ys"]) - 1
+                return [(base + k, {"rows": rows, "number": k + 1, "count": len(sheets), "start": k * capacity})
                         for k, rows in enumerate(sheets)]
             shifted = page_no + extra if repeat and page_no > base else page_no
-            return [(shifted, {"rows": all_rows, "number": 1, "count": len(sheets)})]
+            return [(shifted, {"rows": all_rows, "number": 1, "count": len(sheets), "start": 0})]
 
         for i, entry in enumerate(doc.fill):
             where = f"documents.{doc.id}.fill[{i}]"
@@ -172,7 +178,14 @@ def fill_pdf(doc, values, renderer, out):
                     rows = sheet["rows"] if entry is repeat else (values.get(entry["table"]) or [])
                     if entry is not repeat and page_no != targets(entry["page"])[0][0]:
                         continue  # a table that does not repeat is drawn once
-                    put_table(page, entry, pack.field(entry["table"]), rows, pack.date_format, doc.label)
+                    put_table(page, entry, pack.field(entry["table"]), rows, pack.date_format, doc.label,
+                              start=sheet["start"] if entry is repeat else 0)
+                elif "sign" in entry:
+                    if entry["when"] and not renderer.expr(entry["when"], vals, where):
+                        continue
+                    sig = vals.get(entry["sign"])
+                    if isinstance(sig, signatures.Signature):
+                        signatures.draw(page, entry["box"], sig, variant=sheet["number"] - 1)
                 elif "mark" in entry:
                     if renderer.expr(entry["mark"], vals, where):
                         page.insert_text(entry["at"], entry["symbol"], fontname="helv", fontsize=entry["size"])

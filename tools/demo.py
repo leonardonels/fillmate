@@ -31,6 +31,34 @@ def setup(home):
     s = store.load_settings()
     s.update(test_mode=True, test_recipients=["tester@example.com"], sender="mail_app")
     store.save_settings(s)
+    make_signature(home)
+
+
+def make_signature(home):
+    """A made-up signature for the demo profile: two variants of the same scribble."""
+    import tempfile
+
+    import pymupdf
+
+    from fillmate import signatures
+
+    tmp = Path(tempfile.mkdtemp())
+    images = []
+    for k, lift in enumerate((0, 9)):
+        pdf = pymupdf.open()
+        page = pdf.new_page(width=260, height=110)
+        shape = page.new_shape()
+        shape.draw_bezier((30, 70), (60, 10 + lift), (80, 100), (110, 50))
+        shape.draw_bezier((110, 50), (140, 20), (150, 90 - lift), (230, 40 + lift))
+        shape.finish(color=(0.08, 0.12, 0.42), width=2.2)
+        shape.commit()
+        path = tmp / f"demo-signature-{k}.png"
+        page.get_pixmap(dpi=200).save(path)
+        images.append(path)
+    signatures.add_images(images, "Alex Example")
+    for path in images:
+        path.unlink()
+    tmp.rmdir()
 
 
 def main():

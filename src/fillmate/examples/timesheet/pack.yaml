@@ -12,6 +12,7 @@ date_format: "%d/%m/%Y"
 profile:
   - {id: full_name, label: Full name, required: true}
   - {id: manager_email, label: Manager's email, required: true}
+  - {id: my_signature, label: Your signature, type: signature, default: "yes"}
 
 fields:
   - {id: month, label: Month, placeholder: "e.g. November 2026", required: true}
@@ -26,6 +27,7 @@ fields:
       - {id: end, label: To, type: time, default: "13:00"}
       - {id: hours, label: Hours, formula: "hours_between(start, end)"}
       - {id: activity, label: Activity}
+      - {id: signed, label: Signature, type: signature, default: "yes"}
 
 computed:
   total_hours: "{{ work | total('hours') }}"
@@ -46,10 +48,11 @@ documents:
       - table: work
         xs: [40, 110, 160, 210, 260, 470, 555]
         ys: [214, 236, 258, 280, 302, 324, 346, 368, 390, 412, 434, 456, 478, 500, 522, 544, 566, 588, 610, 632, 654]
-        cols: [day, start, end, hours, activity, ~]
+        cols: [day, start, end, hours, activity, signed]
       - {value: "{{ sheet.rows | days('day') }}", lines: [[142, 682, 200]]}
       - {value: "{{ sheet.rows | total('hours') }}", lines: [[337, 682, 395]]}
       - {value: "{{ sheet.number }} of {{ sheet.count }}", lines: [[467, 682, 555]]}
+      - {sign: my_signature, box: [40, 748, 250, 780]}
 
 output_folder: "{{ month | slug }}_timesheet"
 

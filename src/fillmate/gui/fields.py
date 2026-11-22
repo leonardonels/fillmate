@@ -104,6 +104,10 @@ class FieldInput:
         if t == "table":
             from .table import TableInput  # imports this module: loaded only when a pack has a table
             self.widget = TableInput(f, pack)
+        elif t == "signature":
+            from .signatures_ui import SignaturePicker
+            self.widget = SignaturePicker()
+            self.widget.setAccessibleName(f.label)
         elif t == "dates":
             self.widget = DateList(display)
         elif t == "date":
@@ -140,7 +144,7 @@ class FieldInput:
 
     def get(self):
         w, t = self.widget, self.field.type
-        if t == "table":
+        if t in ("table", "signature"):
             return w.get()
         if t == "dates":
             return w.dates()
@@ -158,7 +162,7 @@ class FieldInput:
 
     def set(self, value):
         w, t = self.widget, self.field.type
-        if t == "table":
+        if t in ("table", "signature"):
             w.set(value)
         elif t == "dates":
             if value:

@@ -18,8 +18,8 @@ from .templating import make_env
 
 SPEC_FILE = "pack.yaml"
 SPEC_VERSION = 1
-FIELD_TYPES = {"text", "multiline", "date", "dates", "time", "bool", "choice", "table"}
-COLUMN_TYPES = {"text", "date", "time", "number", "choice"}
+FIELD_TYPES = {"text", "multiline", "date", "dates", "time", "bool", "choice", "table", "signature"}
+COLUMN_TYPES = {"text", "date", "time", "number", "choice", "signature"}
 ALIGNS = {"left", "center", "right"}
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
@@ -210,6 +210,12 @@ def _pdf_entry(raw, w):
         raise PackError(f"{w}.page must be a page number starting from 0.")
     if "field" in raw:
         return {"field": _str(raw["field"], f"{w}.field"), "value": _str(raw.get("value"), f"{w}.value")}
+    if "sign" in raw:
+        box = _numbers(raw.get("box"), 4, f"{w}.box")
+        if box[2] <= box[0] or box[3] <= box[1]:
+            raise PackError(f"{w}.box must be [x0, y0, x1, y1] with x1 > x0 and y1 > y0.")
+        return {"sign": _str(raw["sign"], f"{w}.sign"), "page": page, "box": box,
+                "when": _str(raw.get("when"), f"{w}.when", "")}
     if "table" in raw:
         xs, ys = _edges(raw.get("xs"), f"{w}.xs"), _edges(raw.get("ys"), f"{w}.ys")
         cols = _list(raw.get("cols"), f"{w}.cols")
@@ -233,8 +239,8 @@ def _pdf_entry(raw, w):
                 "size": float(raw.get("size", 11))}
     lines = _list(raw.get("lines"), f"{w}.lines")
     if not lines:
-        raise PackError(f"{w} needs 'lines' (text), 'field' (fillable PDF field), 'mark' (check mark) "
-                        "or 'table' (a grid).")
+        raise PackError(f"{w} needs 'lines' (text), 'field' (fillable PDF field), 'mark' (check mark), "
+                        "'table' (a grid) or 'sign' (a signature).")
     return {"value": _str(raw.get("value"), f"{w}.value"), "page": page,
             "lines": [_numbers(line, 3, f"{w}.lines[{j}]") for j, line in enumerate(lines)],
             "font": _str(raw.get("font"), f"{w}.font", "helv"),
@@ -271,6 +277,13 @@ def _check_tables(fill, fields, where):
     if repeating > 1:
         raise PackError(f"{where}: only one table per document can repeat its page; "
                         "set overflow: error on the others.")
+
+
+def _check_signs(fill, fields, where):
+    kinds = {f.id: f.type for f in fields}
+    for j, e in enumerate(fill):
+        if "sign" in e and kinds.get(e["sign"]) != "signature":
+            raise PackError(f"{where}.fill[{j}].sign: '{e['sign']}' is not a signature field.")
 
 
 def _inside(root, rel, where):
@@ -334,6 +347,7 @@ def load_pack(root) -> Pack:
         parse = _pdf_entry if kind == ".pdf" else _docx_entry
         fill = [parse(e, f"{w}.fill[{j}]") for j, e in enumerate(_list(d.get("fill"), f"{w}.fill"))]
         _check_tables(fill, fields, w)
+        _check_signs(fill, profile + fields, w)
         placeholders = bool(d.get("placeholders", False))
         if placeholders and kind != ".docx":
             raise PackError(f"{w}: 'placeholders' only works with .docx templates.")
@@ -397,6 +411,9 @@ def _check_templates(pack):
                 check(e["mark"], f"documents.{d.id}.fill[{j}].mark", expression=True)
             elif "table" in e:
                 pass
+            elif "sign" in e:
+                if e["when"]:
+                    check(e["when"], f"documents.{d.id}.fill[{j}].when", expression=True)
             else:
                 check(e["value"], f"documents.{d.id}.fill[{j}].value")
     for key in ("subject", "body"):

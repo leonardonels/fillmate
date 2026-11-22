@@ -36,7 +36,8 @@ HINTS = ("Drag over a blank line to add a box, or double-click it.",
          "Drag a box to move it: arrow keys nudge it, Delete removes it.",
          "Right-click for check marks. Ctrl + wheel zooms.")
 KINDS = (("Text", "text"), ("Date", "date"), ("Time", "time"), ("Number", "number"), ("Formula", "formula"),
-         ("Leave empty", None))
+         ("Signature", "signature"), ("Leave empty", None))
+SIGN_W, SIGN_H = 150.0, 36.0  # points: a new signature box
 NEW_TABLE = "__new_table__"
 INSET, PANEL_W = 12, 340
 TYPES = (("Text", "text"), ("Long text", "multiline"), ("Date", "date"), ("Several days", "dates"),
@@ -210,6 +211,64 @@ class GridItem(AreaItem):
             # Redrawing replaces this item: do it once its own event is over.
             index, xs, ys = self.entry_index, list(self.xs), list(self.ys)
             QTimer.singleShot(0, lambda: self.dialog.on_grid_edited(index, xs, ys))
+            return
+        super().mouseReleaseEvent(event)
+
+
+class SignItem(AreaItem):
+    """A signature box: drag it to move it, drag its bottom-right corner to resize it."""
+
+    CORNER = 8  # px on screen
+
+    def __init__(self, rect, entry_index, dialog):
+        super().__init__(rect, entry_index, None)
+        self.dialog = dialog
+        self.resizing = None
+        self.setAcceptHoverEvents(True)
+
+    def _corner(self, pos):
+        views = self.scene().views() if self.scene() else []
+        tol = self.CORNER / (views[0].transform().m11() if views else 1)
+        r = self.rect()
+        return abs(pos.x() - r.right()) <= tol and abs(pos.y() - r.bottom()) <= tol
+
+    def paint(self, painter, option, widget=None):
+        super().paint(painter, option, widget)
+        r = self.rect()
+        f = painter.font()
+        f.setPointSizeF(max(4.0, min(9.0, r.height() * 0.3)))
+        painter.setFont(f)
+        painter.setPen(QColor(27, 42, 107, 170))
+        painter.drawText(r, Qt.AlignCenter, "✍ signature")
+        if self.isSelected():
+            painter.setBrush(QColor(PAGE_INK))
+            k = 3.0
+            painter.drawRect(QRectF(r.right() - k, r.bottom() - k, 2 * k, 2 * k))
+
+    def hoverMoveEvent(self, event):
+        self.setCursor(Qt.SizeFDiagCursor if self._corner(event.pos()) else Qt.SizeAllCursor)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._corner(event.pos()):
+            self.resizing = QRectF(self.rect())
+            self.setSelected(True)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.resizing is None:
+            super().mouseMoveEvent(event)
+            return
+        r = QRectF(self.resizing.topLeft(), event.pos())
+        if r.width() >= 12 and r.height() >= 8:
+            self.setRect(r)
+
+    def mouseReleaseEvent(self, event):
+        if self.resizing is not None:
+            self.resizing = None
+            r, index = self.rect(), self.entry_index
+            QTimer.singleShot(0, lambda: self.dialog.on_sign_resized(index, r))
             return
         super().mouseReleaseEvent(event)
 
@@ -640,7 +699,7 @@ class CalibrateDialog(QDialog):
         return next((c for c in self.columns_of(fid) if c["id"] == cid), None)
 
     def text_choices(self):
-        out = [(f["label"], template_for(f)) for f in self.fields() if f["type"] not in ("bool", "table")]
+        out = [(f["label"], template_for(f)) for f in self.fields() if f["type"] not in ("bool", "table", "signature")]
         out += [(k.replace("_", " ").capitalize(), f"{{{{ {k} }}}}") for k in self.pack.computed]
         placed = []
         for e in self.entries:
@@ -664,6 +723,9 @@ class CalibrateDialog(QDialog):
                     out.append((f"{name}: total {c['label']} in all", f"{{{{ {fid} | total('{c['id']}') }}}}"))
         return out
 
+    def sign_choices(self):
+        return [(f["label"], f["id"]) for f in self.fields() if f["type"] == "signature"]
+
     def mark_choices(self):
         out = []
         for f in self.fields():
@@ -678,6 +740,9 @@ class CalibrateDialog(QDialog):
         if "table" in e:
             name = next((f["label"] for f in self.tables() if f["id"] == e["table"]), "(choose the table)")
             return f"▦  {name}   · {len(e['xs']) - 1} columns × {len(e['ys']) - 1} rows"
+        if "sign" in e:
+            name = self.name_of(e["sign"], self.sign_choices()) if e["sign"] else "(whose signature?)"
+            return f"✍  {name}"
         if "field" in e:
             return f"Form field “{e['field']}”: {self.name_of(e['value'], self.text_choices())}"
         if "mark" in e:
@@ -710,7 +775,7 @@ class CalibrateDialog(QDialog):
         return f
 
     def remove_unused_fields(self):
-        used_here = " ".join(str(e.get("value", e.get("mark", e.get("table", "")))) for e in self.entries)
+        used_here = " ".join(str(e.get("value", e.get("mark", e.get("table", e.get("sign", ""))))) for e in self.entries)
         unused = []
         for f in self.pack.profile + self.pack.fields:
             if re.search(rf"\b{re.escape(f.id)}\b", used_here):
@@ -794,12 +859,22 @@ class CalibrateDialog(QDialog):
             if "field" in e or e.get("page", 0) != self.page_no:
                 continue
             if "table" in e:
-                labels = [(self.column(e["table"], c) or {}).get("label", c) if c else "" for c in e["cols"]]
+                labels = []
+                for c in e["cols"]:
+                    col = self.column(e["table"], c) if c else None
+                    labels.append("" if not c else ("✍ " if (col or {}).get("type") == "signature" else "")
+                                  + (col or {}).get("label", c))
                 item = GridItem(e, i, labels, self)
                 scene.addItem(item)
                 item.setSelected(i == self.current)
                 if i == self.current:
                     item.column = self.grid_column
+                continue
+            if "sign" in e:
+                x0, y0, x1, y1 = e["box"]
+                item = SignItem(QRectF(x0, y0, x1 - x0, y1 - y0), i, self)
+                scene.addItem(item)
+                item.setSelected(i == self.current)
                 continue
             if "mark" in e:
                 s = e.get("size", 11)
@@ -837,18 +912,20 @@ class CalibrateDialog(QDialog):
             return
         if e is None:
             return
-        is_mark = "mark" in e
-        self.value_label.setText("Ticked when" if is_mark else "What goes here")
-        choices = self.mark_choices() if is_mark else self.text_choices()
-        current = e["mark"] if is_mark else e["value"]
+        is_mark, is_sign = "mark" in e, "sign" in e
+        self.value_label.setText("Ticked when" if is_mark else "Whose signature" if is_sign else "What goes here")
+        choices = self.mark_choices() if is_mark else self.sign_choices() if is_sign else self.text_choices()
+        current = e["mark"] if is_mark else e["sign"] if is_sign else e["value"]
         self.value.blockSignals(True)
         self.value.clear()
         if not current:
             self.value.addItem("Choose…", None)
         for text, v in choices:
             self.value.addItem(text, v)
-        self.value.addItem("New yes/no question…" if is_mark else "New field…", "__new__")
-        self.value.addItem("Custom condition…" if is_mark else "Custom text…", CUSTOM)
+        self.value.addItem("New yes/no question…" if is_mark else "Your signature (new field)…" if is_sign
+                           else "New field…", "__new__")
+        if not is_sign:
+            self.value.addItem("Custom condition…" if is_mark else "Custom text…", CUSTOM)
         known = [v for _t, v in choices]
         if not current:
             self.value.setCurrentIndex(0)
@@ -865,11 +942,11 @@ class CalibrateDialog(QDialog):
         self.size.setValue(e.get("size", 11 if is_mark else 10))
         self.size.blockSignals(False)
         for w in (self.size, self.size_label):
-            w.setVisible("field" not in e)
+            w.setVisible("field" not in e and not is_sign)
 
     def set_current_value(self, value):
         e = self.entries[self.current]
-        e["mark" if "mark" in e else "value"] = value
+        e["mark" if "mark" in e else "sign" if "sign" in e else "value"] = value
         self.changed()
 
     def on_value_picked(self, index):
@@ -877,7 +954,13 @@ class CalibrateDialog(QDialog):
             return
         data = self.value.itemData(index)
         e = self.entries[self.current]
-        if data == "__new__":
+        if data == "__new__" and "sign" in e:
+            used = {f["id"] for f in self.fields()}
+            fid = "my_signature" if "my_signature" not in used else self.new_field_id("My signature")
+            self.new_fields.append({"id": fid, "label": "Your signature", "type": "signature", "section": "profile",
+                                    "options": [], "default": "yes"})
+            self.set_current_value(fid)
+        elif data == "__new__":
             f = self.make_field(yes_no="mark" in e)
             if f is None:
                 self.show_editor()
@@ -891,7 +974,7 @@ class CalibrateDialog(QDialog):
             self.set_current_value(data)
 
     def on_custom_edited(self, text):
-        if self.current is not None:
+        if self.current is not None and "sign" not in self.entries[self.current]:
             e = self.entries[self.current]
             e["mark" if "mark" in e else "value"] = text
             item = self.list.item(self.current)
@@ -977,7 +1060,29 @@ class CalibrateDialog(QDialog):
             m.add("Just a text box", "box", lambda: self.add_text_box(rect))
             m.popup(self.view.mapToGlobal(self.view.mapFromScene(rect.center())))
             return
+        if rect.height() > 22:  # taller than a line of text: perhaps a place to sign
+            m = self.context
+            m.clear()
+            m.add("A text box", "box", lambda: self.add_text_box(rect))
+            m.add("A signature box", "box", lambda: self.add_sign(rect))
+            m.popup(self.view.mapToGlobal(self.view.mapFromScene(rect.center())))
+            return
         self.add_text_box(rect)
+
+    def add_sign(self, rect):
+        sigs = self.sign_choices()
+        self.entries.append({"sign": sigs[0][1] if len(sigs) == 1 else "", "page": self.page_no, "when": "",
+                             "box": [rect.left(), rect.top(), rect.right(), rect.bottom()]})
+        self.current = len(self.entries) - 1
+        self.changed()
+        if not sigs or len(sigs) > 1:
+            self.value.setFocus()
+            self.value.showPopup()
+
+    def on_sign_resized(self, index, rect):
+        self.entries[index]["box"] = [rect.left(), rect.top(), rect.right(), rect.bottom()]
+        self.current = index
+        self.changed()
 
     def add_text_box(self, rect):
         size, line = self._line(rect)
@@ -1008,6 +1113,8 @@ class CalibrateDialog(QDialog):
             m.add("Add a text box here", "box", lambda: self.add_text_box(
                 QRectF(QPointF(point.x(), point.y() - 9), QPointF(point.x() + QUICK_WIDTH, point.y() + 3))))
             m.add("Add a check mark here", "check", lambda: self.add_mark(point))
+            m.add("Add a signature box here", "box", lambda: self.add_sign(
+                QRectF(point.x() - SIGN_W / 3, point.y() - SIGN_H * 0.7, SIGN_W, SIGN_H)))
             grid = pick_grid(self.grids_here(), at=(point.x(), point.y()))
             if grid is not None:
                 n_cols, n_rows = len(grid["xs"]) - 1, len(grid["ys"]) - 1
@@ -1215,6 +1322,10 @@ class CalibrateDialog(QDialog):
             else:
                 c["formula"] = ""
                 c["type"] = kind
+                if kind == "signature":
+                    c["default"] = "yes"  # new rows are signed
+                elif c.get("default") == "yes":
+                    c["default"] = None
         self.order_columns(fid)
         self.changed()
 
@@ -1244,6 +1355,9 @@ class CalibrateDialog(QDialog):
         if "table" in e:
             e["xs"] = [x + dx for x in e["xs"]]
             e["ys"] = [y + dy for y in e["ys"]]
+        elif "sign" in e:
+            x0, y0, x1, y1 = e["box"]
+            e["box"] = [x0 + dx, y0 + dy, x1 + dx, y1 + dy]
         elif "mark" in e:
             e["at"] = [e["at"][0] + dx, e["at"][1] + dy]
         else:
@@ -1306,13 +1420,13 @@ class CalibrateDialog(QDialog):
                                         "table, and give every formula column its formula.")
                     return
                 continue
-            key = "mark" if "mark" in e else "value"
+            key = "mark" if "mark" in e else "sign" if "sign" in e else "value"
             if not str(e.get(key, "")).strip():
                 self.list.setCurrentRow(i)
                 frame_mod.tell(self, "Missing value", "Choose what goes in every box (or when every check "
-                                    "mark is ticked), or delete it.")
+                                    "mark is ticked, or whose signature goes in each signature box), or delete it.")
                 return
-        text = " ".join(str(e.get("value", e.get("mark", e.get("table", "")))) for e in self.entries)
+        text = " ".join(str(e.get("value", e.get("mark", e.get("table", e.get("sign", ""))))) for e in self.entries)
         used_new = [nf for nf in self.new_fields if re.search(rf"\b{nf['id']}\b", text)]
         new_ids = {nf["id"] for nf in self.new_fields}
         edited = {fid: cols for fid, cols in self.table_columns.items()

@@ -11,6 +11,7 @@ from pathlib import Path
 import pymupdf
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
 from . import PackError
 from .pack import ID_RE, NAME_RE, SPEC_FILE, load_pack
@@ -63,6 +64,13 @@ def entry_to_yaml(entry):
     if "field" in entry:
         m["field"] = entry["field"]
         m["value"] = entry["value"]
+    elif "sign" in entry:
+        m["sign"] = entry["sign"]
+        if entry.get("page", 0):
+            m["page"] = entry["page"]
+        m["box"] = _flow([_round(v) for v in entry["box"]])
+        if entry.get("when"):
+            m["when"] = entry["when"]
     elif "table" in entry:
         m["table"] = entry["table"]
         if entry.get("page", 0):
@@ -113,6 +121,13 @@ def set_document_fill(root, doc_id, entries):
     raise PackError(f"No document '{doc_id}' in the pack.")
 
 
+def _scalar(value):
+    """Words YAML would read as true/false (yes, no, on…) stay text: quoted."""
+    if isinstance(value, str) and value.lower() in ("yes", "no", "on", "off", "true", "false", "y", "n"):
+        return DoubleQuotedScalarString(value)
+    return value
+
+
 def column_to_yaml(c):
     """A table column (a dict with id, label, type, formula…) as one flow-style line."""
     m = CommentedMap(id=c["id"], label=c.get("label") or c["id"])
@@ -122,7 +137,7 @@ def column_to_yaml(c):
         m["type"] = c["type"]
     for key in ("format", "default", "placeholder", "help"):
         if c.get(key) not in (None, ""):
-            m[key] = c[key]
+            m[key] = _scalar(c[key])
     if c.get("options"):
         m["options"] = _flow(list(c["options"]))
     if c.get("required"):
@@ -158,6 +173,8 @@ def save_positions(root, doc_id, entries, new_fields=(), table_columns=None):
             m["type"] = nf["type"]
         if nf.get("options"):
             m["options"] = _flow(list(nf["options"]))
+        if nf.get("default") not in (None, ""):
+            m["default"] = _scalar(nf["default"])
         if nf.get("type") == "table":  # a table: one column per line underneath
             m["columns"] = CommentedSeq(column_to_yaml(c) for c in table_columns.pop(nf["id"], nf.get("columns", [])))
         else:
@@ -501,14 +518,11 @@ def guess_columns(headers, used=()):
     """Columns for a new table from its header texts: (columns, cols for the grid entry).
 
     Dates and times are recognised by name; an hours column between two times gets the
-    formula hours_between(start, end); a signature column is left empty.
+    formula hours_between(start, end); a signature column signs each row with your signature.
     """
     used = set(used) | RESERVED
     columns, cols, kinds = [], [], [_kind_of(h) for h in headers]
     for j, (header, kind) in enumerate(zip(headers, kinds)):
-        if kind == "skip":
-            cols.append(None)
-            continue
         name = header.strip() or f"Column {j + 1}"
         cid = _field_id(" ".join(name.split()[:3]), used)
         c = {"id": cid, "label": name[:1].upper() + name[1:], "type": "text"}
@@ -516,6 +530,8 @@ def guess_columns(headers, used=()):
             c["type"] = "date"
         elif kind in ("start", "end"):
             c["type"] = "time"
+        elif kind == "skip":  # a signature column: each row signed with your signature
+            c.update(type="signature", default="yes")
         c["kind"] = kind
         columns.append(c)
         cols.append(cid)

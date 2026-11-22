@@ -17,6 +17,10 @@ documents by email.
 - **Tables**: timesheets and other ruled grids. Type the rows in a small spreadsheet with a
   fill handle. Hours and totals are computed, and extra rows go on a repeated page with its
   own totals.
+- **Signatures**: add yours from a photo, a scan or a PDF and place it on forms and in each
+  row of a table. It stays on your computer and is never shared with a pack.
+- **Saved forms**: what you typed is kept next to the documents. Open it again to change
+  something or start next month from it, or save it as a file to hand over.
 - **Email**: Gmail (sign in with Google, no password stored), any SMTP server, or a draft
   opened in your own mail app.
 - **Safety**: a test mode sends only to your own addresses, and a confirmation before
@@ -103,10 +107,10 @@ fillmate export travel-request travel-request.zip
 
 | What | Where (Linux; macOS/Windows use their usual folders) |
 |---|---|
-| Settings, profile, Google sign-in | `~/.config/fillmate/` (files readable only by you) |
+| Settings, profile, signatures, Google sign-in | `~/.config/fillmate/` (files readable only by you) |
 | SMTP password | system keyring, otherwise `~/.config/fillmate/` |
 | Installed packs, saved presets, table drafts | `~/.local/share/fillmate/` |
-| Filled documents | `~/Documents/Fillmate/<date>_<destination>/` |
+| Filled documents and their saved forms (`.fillmate`) | `~/Documents/Fillmate/<date>_<destination>/` |
 
 `FILLMATE_HOME=/some/folder` keeps everything in a single folder instead.
 

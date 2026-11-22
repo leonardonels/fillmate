@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.1 (unreleased)
+
+- **Signatures** (Settings → Profile → Signatures): add them from photos or scans (the paper becomes transparent
+  and the margins are trimmed), or cut one out of a PDF. Several images of one signature take turns, row after row.
+  They stay on your computer and are never part of a pack or a pack export.
+- A `signature` field type (usually in the profile) and a `sign` entry place a signature in a box on a PDF. A
+  `signature` table column signs each row: ✓ in the form, toggled by a click or Space, and copied by the fill handle.
+- Positions editor: right-click → Add a signature box (drag its corner to resize it), or drag a tall box and
+  choose "A signature box". Table columns can be of kind Signature, and "Firma", "Signature" and "Unterschrift"
+  headers are guessed as one.
+- **Saved forms**: Create documents also writes a `.fillmate` file with what you typed, next to the documents.
+  The drawer lists the latest ones. **Open…** loads one to change it or to start the next month from it, and
+  **Save as…** writes one anywhere, to keep or hand over. `fillmate fill <pack> --from file.fillmate`.
+- **Save a copy…** (toolbar) copies the created documents to a folder you choose.
+- Tables: Import and Export CSV from the ⋯ button.
+- The example timesheet signs each row and the employee signature line.
+
 ## 0.2.0 (unreleased)
 
 - **Tables** for timesheets and other ruled grids: a `table` field with typed columns and formula columns

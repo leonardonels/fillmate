@@ -69,10 +69,11 @@ def test_duration_arithmetic_and_format():
 
 def test_example_loads(ts):
     work = ts.field("work")
-    assert work.type == "table" and [c.id for c in work.columns] == ["day", "start", "end", "hours", "activity"]
-    assert work.column("hours").formula
+    assert work.type == "table"
+    assert [c.id for c in work.columns] == ["day", "start", "end", "hours", "activity", "signed"]
+    assert work.column("hours").formula and work.column("signed").type == "signature"
     entry = next(e for e in ts.documents[0].fill if "table" in e)
-    assert len(entry["ys"]) == 21 and entry["cols"][-1] is None and entry["overflow"] == "repeat_page"
+    assert len(entry["ys"]) == 21 and entry["cols"][-1] == "signed" and entry["overflow"] == "repeat_page"
 
 
 @pytest.mark.parametrize("change, message", [
@@ -218,10 +219,11 @@ def test_guess_columns():
     from fillmate.authoring import guess_columns
     columns, cols = guess_columns(["Data", "dalle", "alle", "ore effettive", "Argomento trattato in Azienda",
                                    "Firma Studente"])
-    assert cols == ["data", "dalle", "alle", "ore_effettive", "argomento_trattato_in", None]
+    assert cols == ["data", "dalle", "alle", "ore_effettive", "argomento_trattato_in", "firma_studente"]
     kinds = {c["id"]: c.get("formula") or c["type"] for c in columns}
     assert kinds == {"data": "date", "dalle": "time", "alle": "time", "ore_effettive": "hours_between(dalle, alle)",
-                     "argomento_trattato_in": "text"}
+                     "argomento_trattato_in": "text", "firma_studente": "signature"}
+    assert columns[-1]["default"] == "yes"  # each row signed with your signature
     columns, cols = guess_columns(["In", "Out", "Total"])
     assert cols[0] != "in" and columns[2]["formula"] == f"hours_between({cols[0]}, {cols[1]})"
     columns, _ = guess_columns(["Qty", "Hours"])
@@ -240,7 +242,8 @@ def test_save_new_table_from_calibration(tmp_path):
     pack = save_positions(pack.root, "form", [entry, total],
                           [{"id": "work", "label": "Work", "type": "table", "section": "fields"}], {"work": columns})
     work = pack.field("work")
-    assert [c.id for c in work.columns] == ["date", "from", "to", "hours", "activity"]
+    assert [c.id for c in work.columns] == ["date", "from", "to", "hours", "activity", "signature"]
+    assert work.column("signature").type == "signature" and work.column("signature").default == "yes"
     text = (pack.root / "pack.yaml").read_text()
     assert "- {id: hours, label: Hours, formula: 'hours_between(from, to)'}" in text
     # editing the columns of an existing table later
