@@ -9,14 +9,14 @@
   IgnorableNamespaces="uap rescap">
 
   <Identity
-    Name="TODO-Package-Identity-Name"
-    Publisher="CN=TODO-Package-Identity-Publisher"
+    Name="LeonardoNels.fillmate"
+    Publisher="CN=C168353D-6421-47B7-A613-B7298F87728B"
     Version="@VERSION@"
     ProcessorArchitecture="x64" />
 
   <Properties>
     <DisplayName>fillmate</DisplayName>
-    <PublisherDisplayName>TODO-PublisherDisplayName</PublisherDisplayName>
+    <PublisherDisplayName>Leonardo Nels</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
 
