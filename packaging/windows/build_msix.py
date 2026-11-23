@@ -56,6 +56,14 @@ def main():
     stage = ROOT / "build" / "msix"
     shutil.rmtree(stage, ignore_errors=True)
     shutil.copytree(app_dir, stage)
+    # python-docx ships the unzipped source of default.docx; it only reads default.docx at
+    # runtime. Its "[Content_Types].xml" is a reserved name inside an MSIX (makeappx fails
+    # with 0x8007007b), so leave the folder out.
+    for unused in stage.rglob("default-docx-template"):
+        shutil.rmtree(unused)
+    bad = [p.relative_to(stage) for p in stage.rglob("*") if set(p.name) & set("[]%#{}^`")]
+    if bad:
+        sys.exit("makeappx rejects these file names:\n" + "\n".join(map(str, bad)))
     (stage / "AppxManifest.xml").write_text(manifest, encoding="utf-8")
     assets = stage / "Assets"
     assets.mkdir()
